@@ -34,6 +34,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
       - name: cargo fmt
         working-directory: ${{github.workspace}}
         run: cargo fmt -- --check
