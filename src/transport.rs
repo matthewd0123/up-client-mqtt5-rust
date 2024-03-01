@@ -17,62 +17,17 @@ use paho_mqtt::{self as mqtt};
 
 use up_rust::{
     transport::{datamodel::UTransport, validator::Validators},
-    uprotocol::{UAttributes, UCode, UMessage, UMessageType, UPayload, UStatus, UUri},
+    uprotocol::{UAttributes, UCode, UMessage, UMessageType, UStatus, UUri},
+    uri::validator::UriValidator,
     uuid::builder::UUIDBuilder,
 };
 
-use crate::{UMessageBytes, UPClientMqtt};
+use crate::UPClientMqtt;
 
 impl UPClientMqtt {
-    async fn send_msg(
-        &self,
-        topic: &str,
-        payload: UPayload,
-        attributes: UAttributes,
-    ) -> Result<(), UStatus> {
-        let payload_bytes = UPClientMqtt::upayload_to_bytes(&payload)?;
-        let attributes_bytes = UPClientMqtt::uattributes_to_bytes(&attributes)?;
-
-        let msg_data = UMessageBytes {
-            payload_bytes,
-            attributes_bytes,
-        };
-
-        let msg = mqtt::MessageBuilder::new()
-            .topic(topic)
-            .payload(serde_json::to_vec(&msg_data).map_err(|e| {
-                UStatus::fail_with_code(
-                    UCode::INTERNAL,
-                    format!("Unable to serialize payload: {e:?}"),
-                )
-            })?)
-            .qos(1)
-            .finalize();
-
-        self.mqtt_cli.publish(msg).await.map_err(|e| {
-            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to publish message: {e:?}"))
-        })?;
-
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl UTransport for UPClientMqtt {
-    async fn send(&self, message: UMessage) -> Result<(), UStatus> {
-        // validate message
-        let attributes = *message.attributes.0.ok_or(UStatus::fail_with_code(
-            UCode::INVALID_ARGUMENT,
-            "Invalid uAttributes",
-        ))?;
-
-        let payload = *message.payload.0.ok_or(UStatus::fail_with_code(
-            UCode::INVALID_ARGUMENT,
-            "Invalid uPayload",
-        ))?;
-
-        // Match UAttributes type (Publish / Request / Response / Unspecified)
-        let topic = match attributes
+    async fn get_topic_from_attributes(&self, attributes: &UAttributes) -> Result<String, UStatus> {
+        // Match UAttributes type (Publish / Request / Response) to determine what uuri to use (source or sink)
+        let uri_topic = match attributes
             .type_
             .enum_value()
             .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Unable to parse type"))?
@@ -80,7 +35,7 @@ impl UTransport for UPClientMqtt {
             UMessageType::UMESSAGE_TYPE_PUBLISH => {
                 Validators::Publish
                     .validator()
-                    .validate(&attributes)
+                    .validate(attributes)
                     .map_err(|e| {
                         UStatus::fail_with_code(
                             UCode::INVALID_ARGUMENT,
@@ -93,7 +48,7 @@ impl UTransport for UPClientMqtt {
             UMessageType::UMESSAGE_TYPE_REQUEST => {
                 Validators::Request
                     .validator()
-                    .validate(&attributes)
+                    .validate(attributes)
                     .map_err(|e| {
                         UStatus::fail_with_code(
                             UCode::INVALID_ARGUMENT,
@@ -106,7 +61,7 @@ impl UTransport for UPClientMqtt {
             UMessageType::UMESSAGE_TYPE_RESPONSE => {
                 Validators::Response
                     .validator()
-                    .validate(&attributes)
+                    .validate(attributes)
                     .map_err(|e| {
                         UStatus::fail_with_code(
                             UCode::INVALID_ARGUMENT,
@@ -124,10 +79,49 @@ impl UTransport for UPClientMqtt {
             }
         };
 
-        // TODO: Does the UURI need to be transformed/encoded?
-        let topic_str = topic.to_string();
+        // Validate that topic is resolved.
+        if !UriValidator::is_resolved(&uri_topic) {
+            return Err(UStatus::fail_with_code(
+                UCode::INVALID_ARGUMENT,
+                "UUri does not resolved",
+            ));
+        }
 
-        self.send_msg(&topic_str, payload, attributes).await
+        // Convert UUri topic to valid mqtt topic.
+        let mqtt_topic = UPClientMqtt::mqtt_topic_from_uuri(&uri_topic)?;
+
+        Ok(mqtt_topic)
+    }
+
+    async fn send_message(&self, topic: &str, message: &UMessage) -> Result<(), UStatus> {
+        let data = UPClientMqtt::serialize_umessage(message)?;
+
+        let msg = mqtt::MessageBuilder::new()
+            .topic(topic)
+            .payload(data)
+            .qos(1)
+            .finalize();
+
+        self.mqtt_client.publish(msg).await.map_err(|e| {
+            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to publish message: {e:?}"))
+        })?;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl UTransport for UPClientMqtt {
+    async fn send(&self, message: UMessage) -> Result<(), UStatus> {
+        // validate message
+        let attributes = message.attributes.as_ref().ok_or(UStatus::fail_with_code(
+            UCode::INVALID_ARGUMENT,
+            "Invalid uAttributes",
+        ))?;
+
+        let topic = self.get_topic_from_attributes(attributes).await?;
+
+        self.send_message(&topic, &message).await
     }
 
     async fn register_listener(
