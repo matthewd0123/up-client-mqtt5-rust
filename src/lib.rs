@@ -606,10 +606,10 @@ impl UPClientMqtt {
                     attributes.reqid = Some(reqid).into();
                 }
                 TOKEN_NUM => {
-                    attributes.token = Some(value).into();
+                    attributes.token = Some(value);
                 }
                 TRACEPARENT_NUM => {
-                    attributes.traceparent = Some(value).into();
+                    attributes.traceparent = Some(value);
                 }
                 PAYLOAD_NUM => {
                     let payload_fmt_val = value
