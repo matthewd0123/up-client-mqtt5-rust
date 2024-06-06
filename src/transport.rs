@@ -11,104 +11,13 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
-use paho_mqtt::{self as mqtt};
-
-use up_rust::{
-    transport::{datamodel::UTransport, validator::Validators},
-    uprotocol::{UAttributes, UCode, UMessage, UMessageType, UStatus, UUri},
-    uri::validator::UriValidator,
-    uuid::builder::UUIDBuilder,
-};
+use up_rust::{UCode, UListener, UMessage, UStatus, UTransport, UUri};
 
 use crate::UPClientMqtt;
-
-impl UPClientMqtt {
-    async fn get_topic_from_attributes(&self, attributes: &UAttributes) -> Result<String, UStatus> {
-        // Match UAttributes type (Publish / Request / Response) to determine what uuri to use (source or sink)
-        let uri_topic = match attributes
-            .type_
-            .enum_value()
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Unable to parse type"))?
-        {
-            UMessageType::UMESSAGE_TYPE_PUBLISH => {
-                Validators::Publish
-                    .validator()
-                    .validate(attributes)
-                    .map_err(|e| {
-                        UStatus::fail_with_code(
-                            UCode::INVALID_ARGUMENT,
-                            format!("Wrong Publish UAttributes {e:?}"),
-                        )
-                    })?;
-
-                attributes.clone().source
-            }
-            UMessageType::UMESSAGE_TYPE_REQUEST => {
-                Validators::Request
-                    .validator()
-                    .validate(attributes)
-                    .map_err(|e| {
-                        UStatus::fail_with_code(
-                            UCode::INVALID_ARGUMENT,
-                            format!("Wrong Request UAttributes {e:?}"),
-                        )
-                    })?;
-
-                attributes.clone().sink
-            }
-            UMessageType::UMESSAGE_TYPE_RESPONSE => {
-                Validators::Response
-                    .validator()
-                    .validate(attributes)
-                    .map_err(|e| {
-                        UStatus::fail_with_code(
-                            UCode::INVALID_ARGUMENT,
-                            format!("Wrong Response UAttributes {e:?}"),
-                        )
-                    })?;
-
-                attributes.clone().sink
-            }
-            UMessageType::UMESSAGE_TYPE_UNSPECIFIED => {
-                return Err(UStatus::fail_with_code(
-                    UCode::INVALID_ARGUMENT,
-                    "Wrong Message type in UAttributes",
-                ))
-            }
-        };
-
-        // Validate that topic is resolved.
-        if !UriValidator::is_resolved(&uri_topic) {
-            return Err(UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
-                "UUri does not resolved",
-            ));
-        }
-
-        // Convert UUri topic to valid mqtt topic.
-        let mqtt_topic = UPClientMqtt::mqtt_topic_from_uuri(&uri_topic)?;
-
-        Ok(mqtt_topic)
-    }
-
-    async fn send_message(&self, topic: &str, message: &UMessage) -> Result<(), UStatus> {
-        let data = UPClientMqtt::serialize_umessage(message)?;
-
-        let msg = mqtt::MessageBuilder::new()
-            .topic(topic)
-            .payload(data)
-            .qos(1)
-            .finalize();
-
-        self.mqtt_client.publish(msg).await.map_err(|e| {
-            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to publish message: {e:?}"))
-        })?;
-
-        Ok(())
-    }
-}
 
 #[async_trait]
 impl UTransport for UPClientMqtt {
@@ -119,34 +28,56 @@ impl UTransport for UPClientMqtt {
             "Invalid uAttributes",
         ))?;
 
-        let topic = self.get_topic_from_attributes(attributes).await?;
+        // validate source and sink uuri's contain no wildcards
+        let src_uri = attributes.source.as_ref().ok_or(UStatus::fail_with_code(
+            UCode::INVALID_ARGUMENT,
+            "Invalid source: expected a source value, none was found",
+        ))?;
 
-        self.send_message(&topic, &message).await
+        src_uri.verify_no_wildcards().map_err(|e| {
+            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, format!("Invalid source: {e:?}"))
+        })?;
+
+        let sink_uri = attributes.sink.as_ref();
+
+        if let Some(sink) = sink_uri {
+            sink.verify_no_wildcards().map_err(|e| {
+                UStatus::fail_with_code(UCode::INVALID_ARGUMENT, format!("Invalid sink: {e:?}"))
+            })?;
+        }
+
+        let topic = self.to_mqtt_topic_string(src_uri, sink_uri);
+
+        self.send_message(&topic, &message, attributes).await
     }
 
     async fn register_listener(
         &self,
-        topic: UUri,
-        listener: Box<dyn Fn(Result<UMessage, UStatus>) + Send + Sync + 'static>,
-    ) -> Result<String, UStatus> {
-        // implementation goes here
-        println!("Registering listener for topic: {:?}", topic);
+        source_filter: &UUri,
+        sink_filter: Option<&UUri>,
+        listener: Arc<dyn UListener>,
+    ) -> Result<(), UStatus> {
+        let topic = self.to_mqtt_topic_string(source_filter, sink_filter);
 
-        listener(Ok(UMessage::new()));
-
-        let listener_id = UUIDBuilder::new().build().to_string();
-
-        Ok(listener_id)
+        self.add_listener(&topic, listener).await
     }
 
-    async fn unregister_listener(&self, topic: UUri, listener: &str) -> Result<(), UStatus> {
-        // implementation goes here
-        println!("Unregistering listener: {listener} for topic: {:?}", topic);
+    async fn unregister_listener(
+        &self,
+        source_filter: &UUri,
+        sink_filter: Option<&UUri>,
+        listener: Arc<dyn UListener>,
+    ) -> Result<(), UStatus> {
+        let topic: String = self.to_mqtt_topic_string(source_filter, sink_filter);
 
-        Ok(())
+        self.remove_listener(&topic, listener).await
     }
 
-    async fn receive(&self, _topic: UUri) -> Result<UMessage, UStatus> {
+    async fn receive(
+        &self,
+        _source_filter: &UUri,
+        _sink_filter: Option<&UUri>,
+    ) -> Result<UMessage, UStatus> {
         Err(UStatus::fail_with_code(
             UCode::UNIMPLEMENTED,
             "This method is not implemented for mqtt. Use register_listener instead.",
