@@ -294,12 +294,15 @@ impl UPClientMqtt {
     /// * `topic` - Topic to subscribe to.
     async fn subscribe(&self, topic: &str) -> Result<(), UStatus> {
         // QOS 1 - Delivered and received at least once
-        self.mqtt_client.subscribe(topic, QOS_1).await.map_err(|e| {
-            UStatus::fail_with_code(
-                UCode::INTERNAL,
-                format!("Unable to subscribe to topic: {e:?}"),
-            )
-        })?;
+        self.mqtt_client
+            .subscribe(topic, QOS_1)
+            .await
+            .map_err(|e| {
+                UStatus::fail_with_code(
+                    UCode::INTERNAL,
+                    format!("Unable to subscribe to topic: {e:?}"),
+                )
+            })?;
 
         Ok(())
     }
@@ -681,7 +684,7 @@ impl UPClientMqtt {
         let src_segment = &self.uri_to_mqtt_topic_segment(src_uri);
         if let Some(sink) = sink_uri {
             let sink_segment = self.uri_to_mqtt_topic_segment(sink);
-            return format!("{cli_indicator}/{src_segment}/{sink_segment}")
+            return format!("{cli_indicator}/{src_segment}/{sink_segment}");
         }
 
         format!("{cli_indicator}/{src_segment}")
