@@ -20,7 +20,7 @@ use std::{
 use async_std::{sync::RwLock, task::block_on};
 use log::info;
 use mqtt::AsyncClient;
-use paho_mqtt::{self as mqtt, MQTT_VERSION_5};
+use paho_mqtt::{self as mqtt, MQTT_VERSION_5, QOS_1};
 use protobuf::Enum;
 use up_rust::{ComparableListener, UAttributes, UCode, UMessage, UPriority, UStatus, UUri, UUID};
 
@@ -43,6 +43,7 @@ pub const TRACEPARENT_NUM: &str = "11";
 pub const PAYLOAD_NUM: &str = "12";
 
 // URI Wildcard consts
+// TODO: Remove once up-rust contains/exposes these values
 const WILDCARD_AUTHORITY: &str = "*";
 const WILDCARD_ENTITY_ID: u32 = 0x0000_FFFF;
 const WILDCARD_ENTITY_VERSION: u32 = 0x0000_00FF;
@@ -54,6 +55,10 @@ pub struct MqttConfig {
     pub mqtt_port: String,
     /// Hostname of the mqtt broker.
     pub mqtt_hostname: String,
+    /// Max buffered messages for the mqtt client.
+    pub max_buffered_messages: i32,
+    /// Session Expiry Interval for the mqtt client.
+    pub session_expiry_interval: i32,
     /// Optional SSL options for the mqtt connection.
     pub ssl_options: Option<mqtt::SslOptions>,
 }
@@ -88,7 +93,7 @@ impl UPClientMqtt {
     ) -> Result<Self, UStatus> {
         let topic_listener_map = Arc::new(RwLock::new(HashMap::new()));
 
-        let ptr = topic_listener_map.clone();
+        let topic_listener_map_handle = topic_listener_map.clone();
 
         let mqtt_protocol = if config.ssl_options.is_some() {
             "mqtts"
@@ -104,7 +109,7 @@ impl UPClientMqtt {
         let mqtt_cli = mqtt::CreateOptionsBuilder::new()
             .server_uri(mqtt_uri)
             .client_id(client_id)
-            .max_buffered_messages(100)
+            .max_buffered_messages(config.max_buffered_messages)
             .create_client()
             .map_err(|e| {
                 UStatus::fail_with_code(
@@ -114,15 +119,15 @@ impl UPClientMqtt {
             })?;
 
         mqtt_cli.set_message_callback(
-            move |cli: &AsyncClient, message: std::option::Option<paho_mqtt::Message>| {
-                UPClientMqtt::on_receive(cli, message, ptr.clone())
+            move |_cli: &AsyncClient, message: Option<paho_mqtt::Message>| {
+                UPClientMqtt::on_receive(message, topic_listener_map_handle.clone())
             },
         );
 
         // TODO: Integrate ssl options when connecting, may need a username, etc.
         let conn_opts = mqtt::ConnectOptionsBuilder::with_mqtt_version(MQTT_VERSION_5)
             .clean_start(false)
-            .properties(mqtt::properties![mqtt::PropertyCode::SessionExpiryInterval => 3600])
+            .properties(mqtt::properties![mqtt::PropertyCode::SessionExpiryInterval => config.session_expiry_interval])
             .finalize();
 
         mqtt_cli.connect(conn_opts).await.map_err(|e| {
@@ -143,10 +148,8 @@ impl UPClientMqtt {
     /// Helper function that handles MQTT messages on reception.
     ///
     /// # Arguments
-    /// * `cli` - MQTT client that received the message.
     /// * `message` - MQTT message received.
     fn on_receive(
-        _cli: &AsyncClient,
         message: Option<paho_mqtt::Message>,
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
     ) {
@@ -212,12 +215,10 @@ impl UPClientMqtt {
             .topic(topic)
             .properties(props)
             .payload(data)
-            .qos(1)
+            .qos(QOS_1) // QOS 1 - Delivered and received at least once
             .finalize();
 
         info!("Sending message: {:?}", msg);
-
-        // UserProperty is not sent with the message..
 
         self.mqtt_client.publish(msg).await.map_err(|e| {
             UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to publish message: {e:?}"))
@@ -292,7 +293,8 @@ impl UPClientMqtt {
     /// # Arguments
     /// * `topic` - Topic to subscribe to.
     async fn subscribe(&self, topic: &str) -> Result<(), UStatus> {
-        self.mqtt_client.subscribe(topic, 1).await.map_err(|e| {
+        // QOS 1 - Delivered and received at least once
+        self.mqtt_client.subscribe(topic, QOS_1).await.map_err(|e| {
             UStatus::fail_with_code(
                 UCode::INTERNAL,
                 format!("Unable to subscribe to topic: {e:?}"),
@@ -677,12 +679,11 @@ impl UPClientMqtt {
     fn to_mqtt_topic_string(&self, src_uri: &UUri, sink_uri: Option<&UUri>) -> String {
         let cli_indicator = &self.get_client_indicator();
         let src_segment = &self.uri_to_mqtt_topic_segment(src_uri);
-        let sink_segment = if let Some(sink) = sink_uri {
-            self.uri_to_mqtt_topic_segment(sink)
-        } else {
-            "///".into()
-        };
+        if let Some(sink) = sink_uri {
+            let sink_segment = self.uri_to_mqtt_topic_segment(sink);
+            return format!("{cli_indicator}/{src_segment}/{sink_segment}")
+        }
 
-        format!("{cli_indicator}/{src_segment}/{sink_segment}")
+        format!("{cli_indicator}/{src_segment}")
     }
 }
