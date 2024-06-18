@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use up_rust::{UCode, UListener, UMessage, UStatus, UTransport, UUri};
+use up_rust::{UAttributesValidators, UCode, UListener, UMessage, UStatus, UTransport, UUri};
 
 use crate::UPClientMqtt;
 
@@ -25,30 +25,27 @@ impl UTransport for UPClientMqtt {
         // validate message
         let attributes = message.attributes.as_ref().ok_or(UStatus::fail_with_code(
             UCode::INVALID_ARGUMENT,
-            "Invalid uAttributes",
+            "Unable to parse uAttributes",
         ))?;
 
-        // validate source and sink uuri's contain no wildcards
+        // validate uattributes content
+        let validator = UAttributesValidators::get_validator_for_attributes(attributes);
+        validator.validate(attributes).map_err(|e| {
+            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, format!("Invalid uAttributes, err: {e:?}"))
+        })?;
+
+        // Get mqtt topic string from source and sink uuris
         let src_uri = attributes.source.as_ref().ok_or(UStatus::fail_with_code(
             UCode::INVALID_ARGUMENT,
             "Invalid source: expected a source value, none was found",
         ))?;
-
-        src_uri.verify_no_wildcards().map_err(|e| {
-            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, format!("Invalid source: {e:?}"))
-        })?;
-
         let sink_uri = attributes.sink.as_ref();
-
-        if let Some(sink) = sink_uri {
-            sink.verify_no_wildcards().map_err(|e| {
-                UStatus::fail_with_code(UCode::INVALID_ARGUMENT, format!("Invalid sink: {e:?}"))
-            })?;
-        }
-
         let topic = self.to_mqtt_topic_string(src_uri, sink_uri);
 
-        self.send_message(&topic, &message, attributes).await
+        // Extract payload from umessage to send
+        let payload = message.payload.clone();
+
+        self.send_message(&topic, attributes, payload).await
     }
 
     async fn register_listener(

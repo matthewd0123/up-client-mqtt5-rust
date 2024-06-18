@@ -111,7 +111,8 @@ impl RpcClient for UPClientMqtt {
             .map_err(|err| UMessageError::PayloadError(err.get_message()))?;
 
         // Send RPC request
-        self.send_message(&request_topic, &request, &attributes)
+        let request_payload = request.payload.clone();
+        self.send_message(&request_topic, &attributes, request_payload)
             .await
             .map_err(|err| UMessageError::PayloadError(err.get_message()))?;
 

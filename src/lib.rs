@@ -12,16 +12,15 @@
  ********************************************************************************/
 
 use std::{
-    collections::{HashMap, HashSet},
-    str::FromStr,
-    sync::Arc,
+    collections::{HashMap, HashSet}, ops::Deref, str::FromStr, sync::Arc
 };
 
 use async_std::{sync::RwLock, task::block_on};
-use log::info;
+use bytes::Bytes;
+use log::{info, warn};
 use mqtt::AsyncClient;
 use paho_mqtt::{self as mqtt, MQTT_VERSION_5, QOS_1};
-use protobuf::Enum;
+use protobuf::{Enum, MessageDyn};
 use up_rust::{ComparableListener, UAttributes, UCode, UMessage, UPriority, UStatus, UUri, UUID};
 
 pub mod rpc;
@@ -200,23 +199,27 @@ impl UPClientMqtt {
     ///
     /// # Arguments
     /// * `topic` - Mqtt topic to send message to.
-    /// * `message` - UMessage to send.
     /// * `attributes` - UAttributes to send with message.
+    /// * `payload` - UMessage payload to send.
     async fn send_message(
         &self,
         topic: &str,
-        message: &UMessage,
         attributes: &UAttributes,
+        payload: Option<Bytes>,
     ) -> Result<(), UStatus> {
         let props = UPClientMqtt::create_mqtt_properties_from_uattributes(attributes)?;
-        let data = message.payload.clone().unwrap(); // TODO: Handle optional case and is this the best way to send data?
 
-        let msg = mqtt::MessageBuilder::new()
+        let mut msg_builder = mqtt::MessageBuilder::new()
             .topic(topic)
             .properties(props)
-            .payload(data)
-            .qos(QOS_1) // QOS 1 - Delivered and received at least once
-            .finalize();
+            .qos(QOS_1); // QOS 1 - Delivered and received at least once
+
+        // If there is payload to send, add it to the message.
+        if let Some(data) = payload {
+            msg_builder = msg_builder.payload(data);
+        }
+        
+        let msg = msg_builder.finalize();
 
         info!("Sending message: {:?}", msg);
 
@@ -331,166 +334,88 @@ impl UPClientMqtt {
     ) -> Result<mqtt::Properties, UStatus> {
         let mut properties = mqtt::Properties::new();
 
-        // Map UAttributes.id
-        let id_val = attributes.id.as_ref().ok_or(UStatus::fail_with_code(
-            UCode::INTERNAL,
-            "No UAtrributes id found",
-        ))?;
-        properties
-            .push_string_pair(
-                mqtt::PropertyCode::UserProperty,
-                ID_NUM,
-                &id_val.to_hyphenated_string(),
-            )
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Unable to add id property"))?;
-
-        // Map UAttributes.type
-        let type_val = attributes.type_.value();
-        properties
-            .push_string_pair(
-                mqtt::PropertyCode::UserProperty,
-                TYPE_NUM,
-                &type_val.to_string(),
-            )
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Unable to add type property"))?;
-
-        // Map UAttributes.source
-        let source_val = attributes.source.as_ref().ok_or(UStatus::fail_with_code(
-            UCode::INTERNAL,
-            "No UAtrributes source found",
-        ))?;
-        let source_string: String = source_val.into();
-        properties
-            .push_string_pair(mqtt::PropertyCode::UserProperty, SOURCE_NUM, &source_string)
-            .map_err(|_| {
-                UStatus::fail_with_code(UCode::INTERNAL, "Unable to add source property")
-            })?;
-
-        // Map UAttributes.sink
-        let msg_type = up_rust::UMessageType::from_i32(type_val).unwrap();
-        if msg_type != up_rust::UMessageType::UMESSAGE_TYPE_PUBLISH {
-            let sink_val = attributes.sink.as_ref().ok_or(UStatus::fail_with_code(
-                UCode::INTERNAL,
-                "No UAtrributes sink found",
-            ))?;
-            let sink_string: String = sink_val.into();
-            properties
-                .push_string_pair(mqtt::PropertyCode::UserProperty, SINK_NUM, &sink_string)
-                .map_err(|_| {
-                    UStatus::fail_with_code(UCode::INTERNAL, "Unable to add sink property")
-                })?;
-        }
-
-        // Map UAttributes.priority
-        let priority_enum = attributes
-            .priority
-            .enum_value()
-            .map_err(|_| UStatus::fail_with_code(UCode::INTERNAL, "Unable to parse priority"))?;
-
         // If priority code is unspecified, default to CS1.
-        let priority_val = if priority_enum == UPriority::UPRIORITY_UNSPECIFIED {
-            UPriority::UPRIORITY_CS1.to_priority_code()
-        } else {
-            priority_enum.to_priority_code()
+        let mut attributes_mut = attributes.to_owned();
+        let priority_value = attributes_mut.priority.enum_value().map_err(|e| {
+            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to parse priority: {e:?}"))
+        })?;
+        if priority_value == UPriority::UPRIORITY_UNSPECIFIED {
+            attributes_mut.priority = UPriority::UPRIORITY_CS1.into();
+        }
+
+        // Iterate over all fields in UAttributes and extract protobuf field numbers and values.
+        for field in attributes_mut.descriptor_dyn().fields() {
+            // Get protobuf field number as string.
+            let field_proto_number = field.number().to_string();
+
+            // If field is a either an enum or message type, process the field.
+            if field.is_singular() {
+                let field_val_wrapped_opt = field.get_singular(&attributes_mut);
+
+                if let Some(field_val_wrapped) = field_val_wrapped_opt {
+                    match field_val_wrapped.get_type() {
+                        protobuf::reflect::RuntimeType::U32 => {
+                            if let Some(u32_val) = field_val_wrapped.to_u32() {
+                                properties.push_string_pair(mqtt::PropertyCode::UserProperty, &field_proto_number, &u32_val.to_string()).map_err(|e| {
+                                    UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to create a u32 mqtt property: {e:?}"))
+                                })?;
+                            }
+                        },
+                        protobuf::reflect::RuntimeType::String => {
+                            if let Some(string_val) = field_val_wrapped.to_str() {
+                                properties.push_string_pair(mqtt::PropertyCode::UserProperty, &field_proto_number, string_val).map_err(|e| {
+                                    UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to create a string mqtt property: {e:?}"))
+                                })?;
+                            }
+                        },
+                        protobuf::reflect::RuntimeType::VecU8 => todo!(),
+                        protobuf::reflect::RuntimeType::Enum(_) => {
+                            if let Some(enum_number) = field_val_wrapped.to_enum_value() {
+                                properties.push_string_pair(mqtt::PropertyCode::UserProperty, &field_proto_number, &enum_number.to_string()).map_err(|e| {
+                                    UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to create an enum mqtt property: {e:?}"))
+                                })?;
+                            }
+                        },
+                        protobuf::reflect::RuntimeType::Message(descriptor) => {
+                            // Get type name of message to use for downcasting.
+                            let message_type_name = descriptor.name().to_ascii_lowercase();
+
+                            // If field value can be unwrapped as a MessageRef, process the field value.
+                            // Currently only set up to process `UUID` and `UURI` types. Add more as needed.
+                            if let Some(field_val) = field_val_wrapped.to_message() {
+                                let val = field_val.deref();
+
+                                if message_type_name == "uuid" {
+                                    let uuid_downcast = val.downcast_ref::<UUID>();
+                                    if let Some(uuid) = uuid_downcast {
+                                        properties.push_string_pair(mqtt::PropertyCode::UserProperty, &field_proto_number, &uuid.to_hyphenated_string()).map_err(|e| {
+                                            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to create a uuid mqtt property: {e:?}"))
+                                        })?;
+                                    }
+                                } else if message_type_name == "uuri" {
+                                    let uuri_downcast = val.downcast_ref::<UUri>();
+                                    if let Some(uuri) = uuri_downcast {
+                                        let uuri_string: String = uuri.into();
+                                        properties.push_string_pair(mqtt::PropertyCode::UserProperty, &field_proto_number, &uuri_string).map_err(|e| {
+                                            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to create a uuri mqtt property: {e:?}"))
+                                        })?;
+                                    }
+                                } else {
+                                    return Err(UStatus::fail_with_code(UCode::INTERNAL, format!("Unsupported message type: {}", message_type_name)));
+                                }
+                            } else {
+                                return Err(UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to process a field value from uAttributes: {}", field.name())));
+                            }
+                        },
+                        _ => {
+                            return Err(UStatus::fail_with_code(UCode::INTERNAL, format!("Unsupported protobuf field type: {}", field_val_wrapped.get_type())));
+                        },
+                    }
+                }
+            } else {
+                warn!("Unable to process non-singular field type: {}", field.name());
+            }
         };
-
-        properties
-            .push_string_pair(
-                mqtt::PropertyCode::UserProperty,
-                PRIORITY_NUM,
-                &priority_val,
-            )
-            .map_err(|_| {
-                UStatus::fail_with_code(UCode::INTERNAL, "Unable to add priority property")
-            })?;
-
-        // Map Optional UAttributes.ttl
-        if let Some(ttl_val) = attributes.ttl {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    TTL_NUM,
-                    &ttl_val.to_string(),
-                )
-                .map_err(|_| {
-                    UStatus::fail_with_code(UCode::INTERNAL, "Unable to add ttl property")
-                })?;
-        }
-
-        // Map Optional UAttributes.permission_level
-        if let Some(perm_level_val) = attributes.permission_level {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    PERM_LEVEL_NUM,
-                    &perm_level_val.to_string(),
-                )
-                .map_err(|_| {
-                    UStatus::fail_with_code(
-                        UCode::INTERNAL,
-                        "Unable to add permission_level property",
-                    )
-                })?;
-        }
-
-        // Map Optional UAttributes.commstatus
-        if let Some(commstatus) = attributes.commstatus {
-            let commstatus_val = commstatus.value();
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    COMMSTATUS_NUM,
-                    &commstatus_val.to_string(),
-                )
-                .map_err(|_| {
-                    UStatus::fail_with_code(UCode::INTERNAL, "Unable to add comm_status property")
-                })?;
-        }
-
-        // Map UAttributes.reqid
-        // TODO: Need to make this non-optional
-        if let Some(reqid) = attributes.reqid.as_ref() {
-            let reqid_val = reqid.to_hyphenated_string();
-            properties
-                .push_string_pair(mqtt::PropertyCode::UserProperty, REQID_NUM, &reqid_val)
-                .map_err(|_| {
-                    UStatus::fail_with_code(UCode::INTERNAL, "Unable to add reqid property")
-                })?;
-        }
-
-        // Map Optional UAttributes.token
-        if let Some(token_val) = attributes.token.as_ref() {
-            properties
-                .push_string_pair(mqtt::PropertyCode::UserProperty, TOKEN_NUM, token_val)
-                .map_err(|_| {
-                    UStatus::fail_with_code(UCode::INTERNAL, "Unable to add token property")
-                })?;
-        }
-
-        // Map Optional UAttributes.traceparent
-        if let Some(traceparent_val) = attributes.traceparent.as_ref() {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    TRACEPARENT_NUM,
-                    traceparent_val,
-                )
-                .map_err(|_| {
-                    UStatus::fail_with_code(UCode::INTERNAL, "Unable to add traceparent property")
-                })?;
-        }
-
-        // Map UAttributes.payload_format
-        let payload_fmt_val = attributes.payload_format.value();
-        properties
-            .push_string_pair(
-                mqtt::PropertyCode::UserProperty,
-                PAYLOAD_NUM,
-                &payload_fmt_val.to_string(),
-            )
-            .map_err(|_| {
-                UStatus::fail_with_code(UCode::INTERNAL, "Unable to add payload_format property")
-            })?;
 
         Ok(properties)
     }
@@ -552,16 +477,17 @@ impl UPClientMqtt {
                     attributes.sink = Some(sink).into();
                 }
                 PRIORITY_NUM => {
-                    println!("Value: {value:?}");
-                    let priority_val =
-                        up_rust::UPriority::try_from_priority_code(value).map_err(|_| {
-                            UStatus::fail_with_code(
-                                UCode::INTERNAL,
-                                "Unable to parse priority from mqtt properties",
-                            )
-                        });
+                    let priority_val = value
+                    .parse::<i32>()
+                    .map_err(|_| {
+                        UStatus::fail_with_code(
+                            UCode::INTERNAL,
+                            "Unable to parse priority from mqtt properties",
+                        )
+                    })
+                    .unwrap();
                     println!("Priority: {priority_val:?}");
-                    attributes.priority = priority_val.unwrap().into();
+                    attributes.priority = UPriority::from_i32(priority_val).unwrap().into();
                 }
                 TTL_NUM => {
                     let ttl = value
@@ -690,3 +616,180 @@ impl UPClientMqtt {
         format!("{cli_indicator}/{src_segment}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use up_rust::{UAttributesValidators, UMessageType, UPayloadFormat, UPriority, UUIDBuilder};
+
+    use test_case::test_case;
+
+    use super::*;
+
+    // Helper function to construct UAttributes object for testing. This includes uAttributes that are invalid.
+    fn create_uattributes(
+        id: UUID,
+        type_: UMessageType,
+        source: &str,
+        sink: Option<&str>,
+        priority: Option<UPriority>,
+        ttl: Option<u32>,
+        perm_level: Option<u32>,
+        commstatus: Option<UCode>,
+        reqid: Option<UUID>,
+        token: Option<&str>,
+        traceparent: Option<&str>,
+        payload_format: Option<UPayloadFormat>,
+    ) -> UAttributes {
+        let mut attributes = UAttributes::default();
+
+        attributes.id = Some(id).into();
+        attributes.type_ = type_.into();
+        attributes.source = Some(UUri::from_str(source).expect("expected valid source UUri string.")).into();
+
+        if let Some(sink) = sink {
+            attributes.sink = Some(UUri::from_str(sink).expect("expected valid sink UUri string.")).into();
+        }
+
+        if let Some(priority) = priority {
+            attributes.priority = priority.into();
+        }
+
+        if let Some(ttl) = ttl {
+            attributes.ttl = Some(ttl);
+        }
+
+        if let Some(perm_level) = perm_level {
+            attributes.permission_level = Some(perm_level);
+        }
+
+        if let Some(commstatus) = commstatus {
+            attributes.commstatus = Some(commstatus.into());
+        }
+
+        if let Some(reqid) = reqid {
+            attributes.reqid = Some(reqid).into();
+        }
+
+        if let Some(token) = token {
+            attributes.token = Some(token.to_string()).into();
+        }
+
+        if let Some(traceparent) = traceparent {
+            attributes.traceparent = Some(traceparent.to_string()).into();
+        }
+
+        if let Some(payload_format) = payload_format {
+            attributes.payload_format = payload_format.into();
+        }
+
+        attributes
+    }
+
+    // Note: If UPriority is not set in the test case, it will be set to UPriority::UPRIORITY_CS1 and be counted towards the expected attributes total.
+    #[test_case(create_uattributes(UUIDBuilder::build(), UMessageType::UMESSAGE_TYPE_PUBLISH, "//VIN.vehicles/A8000/2/1A50", None, None, None, None, None, None, None, None, None), 4, None; "Publish UAttributes success")]
+    #[test_case(create_uattributes(UUIDBuilder::build(), UMessageType::UMESSAGE_TYPE_NOTIFICATION, "//VIN.vehicles/A8000/2/1A50", Some("//VIN.vehicles/B8000/3/1B50"), None, None, None, None, None, None, None, None), 5, None; "Notification UAttributes success")]
+    #[test_case(create_uattributes(UUIDBuilder::build(), UMessageType::UMESSAGE_TYPE_REQUEST, "//VIN.vehicles/A8000/2/1A50", Some("//VIN.vehicles/B8000/3/1B50"), Some(UPriority::UPRIORITY_CS1), Some(3600), None, None, None, None, None, None), 6, None; "Request UAttributes success")]
+    #[test_case(create_uattributes(UUIDBuilder::build(), UMessageType::UMESSAGE_TYPE_REQUEST, "//VIN.vehicles/A8000/2/1A50", Some("//VIN.vehicles/B8000/3/1B50"), Some(UPriority::UPRIORITY_CS1), None, None, None, Some(UUIDBuilder::build()), None, None, None), 6, None; "Response UAttributes success")]
+    fn test_create_mqtt_properties_from_uattributes(
+        attributes: UAttributes,
+        expected_attributes_num: usize,
+        expected_error: Option<UStatus>,
+    ) {
+        let props = UPClientMqtt::create_mqtt_properties_from_uattributes(&attributes);
+
+        if props.is_ok() {
+            assert_eq!(props.unwrap().len(), expected_attributes_num);
+        } else {
+            assert_eq!(props.err(), expected_error);
+        }
+    }
+
+    #[async_std::test]
+    async fn test_get_uattributes_from_mqtt_properties() {
+        let mut properties = mqtt::Properties::new();
+
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                ID_NUM,
+                &UUIDBuilder::build().to_hyphenated_string(),
+            )
+            .unwrap();
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                TYPE_NUM,
+                &UMessageType::UMESSAGE_TYPE_NOTIFICATION.value().to_string(),
+            )
+            .unwrap();
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                SOURCE_NUM,
+                "//VIN.vehicles/A8000/2/1A50",
+            )
+            .unwrap();
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                SINK_NUM,
+                "//VIN.vehicles/B8000/3/0",
+            )
+            .unwrap();
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                PRIORITY_NUM,
+                &UPriority::UPRIORITY_CS3.value().to_string(),
+            )
+            .unwrap();
+        properties
+            .push_string_pair(mqtt::PropertyCode::UserProperty, TTL_NUM, "100")
+            .unwrap();
+        properties
+            .push_string_pair(mqtt::PropertyCode::UserProperty, PERM_LEVEL_NUM, "1")
+            .unwrap();
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                COMMSTATUS_NUM,
+                &UCode::INTERNAL.value().to_string(),
+            )
+            .unwrap();
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                REQID_NUM,
+                &UUIDBuilder::build().to_hyphenated_string(),
+            )
+            .unwrap();
+        properties
+            .push_string_pair(mqtt::PropertyCode::UserProperty, TOKEN_NUM, "token")
+            .unwrap();
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                TRACEPARENT_NUM,
+                "traceparent",
+            )
+            .unwrap();
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                PAYLOAD_NUM,
+                &up_rust::UPayloadFormat::UPAYLOAD_FORMAT_TEXT
+                    .value()
+                    .to_string(),
+            )
+            .unwrap();
+
+        let attributes = UPClientMqtt::get_uattributes_from_mqtt_properties(&properties).unwrap();
+
+        assert!(
+            UAttributesValidators::get_validator_for_attributes(&attributes)
+                .validate(&attributes)
+                .is_ok()
+        );
+    }
+}
+
