@@ -31,7 +31,10 @@ impl UTransport for UPClientMqtt {
         // validate uattributes content
         let validator = UAttributesValidators::get_validator_for_attributes(attributes);
         validator.validate(attributes).map_err(|e| {
-            UStatus::fail_with_code(UCode::INVALID_ARGUMENT, format!("Invalid uAttributes, err: {e:?}"))
+            UStatus::fail_with_code(
+                UCode::INVALID_ARGUMENT,
+                format!("Invalid uAttributes, err: {e:?}"),
+            )
         })?;
 
         // Get mqtt topic string from source and sink uuris
