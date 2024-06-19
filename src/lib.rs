@@ -634,6 +634,7 @@ mod tests {
     pub const PAYLOAD_NUM: &str = "12";
 
     // Helper function used to create a UAttributes object and mqtt properties object for testing and comparison.
+    #[allow(clippy::too_many_arguments)]
     fn create_test_uattributes_and_properties(
         id: Option<UUID>,
         type_: Option<UMessageType>,
@@ -682,6 +683,7 @@ mod tests {
     }
 
     // Helper function to construct UAttributes object for testing.
+    #[allow(clippy::too_many_arguments)]
     fn create_uattributes(
         id: Option<UUID>,
         type_: Option<UMessageType>,
@@ -752,6 +754,7 @@ mod tests {
     }
 
     // Helper function to create mqtt properties for testing.
+    #[allow(clippy::too_many_arguments)]
     fn create_mqtt_properties(
         id: Option<UUID>,
         type_: Option<UMessageType>,
