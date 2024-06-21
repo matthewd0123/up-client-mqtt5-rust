@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use log::{info, warn};
 use mqtt::AsyncClient;
-use paho_mqtt::{self as mqtt, topic, MQTT_VERSION_5, QOS_1};
+use paho_mqtt::{self as mqtt, MQTT_VERSION_5, QOS_1};
 use protobuf::MessageDyn;
 use up_rust::{
     ComparableListener, UAttributes, UAttributesValidators, UCode, UMessage, UStatus, UUri, UUID,
@@ -45,24 +45,20 @@ pub trait MockableMqttClient: Sync + Send {
     async fn new_client(
         config: MqttConfig,
         client_id: UUID,
-        on_receive: fn(Option<paho_mqtt::Message>, Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>),
+        on_receive: fn(
+            Option<paho_mqtt::Message>,
+            Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
+        ),
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-    ) -> Result<Self, UStatus> where Self: Sized;
+    ) -> Result<Self, UStatus>
+    where
+        Self: Sized;
 
-    async fn publish(
-        &self,
-        mqtt_message: mqtt::Message,
-    ) -> Result<(), UStatus>;
+    async fn publish(&self, mqtt_message: mqtt::Message) -> Result<(), UStatus>;
 
-    async fn subscribe(
-        &self,
-        topic: &str,
-    ) -> Result<(), UStatus>;
+    async fn subscribe(&self, topic: &str) -> Result<(), UStatus>;
 
-    async fn unsubscribe(
-        &self,
-        topic: &str,
-    ) -> Result<(), UStatus>;
+    async fn unsubscribe(&self, topic: &str) -> Result<(), UStatus>;
 }
 
 pub struct AsyncMqttClient {
@@ -79,9 +75,15 @@ impl MockableMqttClient for AsyncMqttClient {
     async fn new_client(
         config: MqttConfig,
         client_id: UUID,
-        on_receive: fn(Option<paho_mqtt::Message>, Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>),
+        on_receive: fn(
+            Option<paho_mqtt::Message>,
+            Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
+        ),
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-    ) -> Result<Self, UStatus> where Self: Sized {
+    ) -> Result<Self, UStatus>
+    where
+        Self: Sized,
+    {
         let mqtt_protocol = if config.ssl_options.is_some() {
             "mqtts"
         } else {
@@ -128,15 +130,21 @@ impl MockableMqttClient for AsyncMqttClient {
             inner_mqtt_client: Arc::new(mqtt_cli),
         })
     }
-    
-    async fn publish(&self, mqtt_message: mqtt::Message,) -> Result<(),UStatus>  {
-        self.inner_mqtt_client.publish(mqtt_message).await.map_err(|e| {
-            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to publish message: {e:?}"))
-        })?;
+
+    async fn publish(&self, mqtt_message: mqtt::Message) -> Result<(), UStatus> {
+        self.inner_mqtt_client
+            .publish(mqtt_message)
+            .await
+            .map_err(|e| {
+                UStatus::fail_with_code(
+                    UCode::INTERNAL,
+                    format!("Unable to publish message: {e:?}"),
+                )
+            })?;
 
         Ok(())
     }
-    
+
     /// Helper function for subscribing the mqtt client to a topic.
     ///
     /// # Arguments
@@ -155,18 +163,21 @@ impl MockableMqttClient for AsyncMqttClient {
 
         Ok(())
     }
-    
+
     /// Helper function for unsubscribing the mqtt client from a topic.
     ///
     /// # Arguments
     /// * `topic` - Topic to unsubscribe from.
     async fn unsubscribe(&self, topic: &str) -> Result<(), UStatus> {
-        self.inner_mqtt_client.unsubscribe(topic).await.map_err(|e| {
-            UStatus::fail_with_code(
-                UCode::INTERNAL,
-                format!("Unable to unsubscribe from topic: {e:?}"),
-            )
-        })?;
+        self.inner_mqtt_client
+            .unsubscribe(topic)
+            .await
+            .map_err(|e| {
+                UStatus::fail_with_code(
+                    UCode::INTERNAL,
+                    format!("Unable to unsubscribe from topic: {e:?}"),
+                )
+            })?;
 
         Ok(())
     }
@@ -218,7 +229,13 @@ impl UPClientMqtt {
 
         let topic_listener_map_handle = topic_listener_map.clone();
 
-        let mqtt_client = AsyncMqttClient::new_client(config, client_id, UPClientMqtt::on_receive, topic_listener_map_handle).await?;
+        let mqtt_client = AsyncMqttClient::new_client(
+            config,
+            client_id,
+            UPClientMqtt::on_receive,
+            topic_listener_map_handle,
+        )
+        .await?;
 
         Ok(Self {
             mqtt_client: Arc::new(mqtt_client),
@@ -227,7 +244,7 @@ impl UPClientMqtt {
             client_type,
         })
     }
- 
+
     /// Helper function that handles MQTT messages on reception.
     ///
     /// # Arguments
@@ -365,6 +382,11 @@ impl UPClientMqtt {
                 // Unsubscribe from topic.
                 self.mqtt_client.unsubscribe(topic).await?;
             }
+        } else {
+            return Err(UStatus::fail_with_code(
+                UCode::NOT_FOUND,
+                "Topic '{topic:?}' is not registered.",
+            ));
         }
 
         Ok(())
@@ -701,39 +723,34 @@ mod tests {
         }
     }
 
-    pub struct MockMqttClient {
-
-    }
+    pub struct MockMqttClient {}
 
     #[async_trait]
     impl MockableMqttClient for MockMqttClient {
         async fn new_client(
-            config: MqttConfig,
-            client_id: UUID,
-            on_receive: fn(Option<paho_mqtt::Message>, Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>),
-            topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-        ) -> Result<Self, UStatus> where Self: Sized {
+            _config: MqttConfig,
+            _client_id: UUID,
+            _on_receive: fn(
+                Option<paho_mqtt::Message>,
+                Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
+            ),
+            _topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
+        ) -> Result<Self, UStatus>
+        where
+            Self: Sized,
+        {
             Ok(Self {})
         }
 
-        async fn publish(
-            &self,
-            mqtt_message: mqtt::Message,
-        ) -> Result<(), UStatus> {
+        async fn publish(&self, _mqtt_message: mqtt::Message) -> Result<(), UStatus> {
             Ok(())
         }
 
-        async fn subscribe(
-            &self,
-            topic: &str,
-        ) -> Result<(), UStatus> {
+        async fn subscribe(&self, _topic: &str) -> Result<(), UStatus> {
             Ok(())
         }
 
-        async fn unsubscribe(
-            &self,
-            topic: &str,
-        ) -> Result<(), UStatus> {
+        async fn unsubscribe(&self, _topic: &str) -> Result<(), UStatus> {
             Ok(())
         }
     }
@@ -991,9 +1008,7 @@ mod tests {
 
         assert!(topic_map.read().await.is_empty());
 
-        let result = up_client
-            .add_listener("test_topic", listener.clone())
-            .await;
+        let result = up_client.add_listener("test_topic", listener.clone()).await;
 
         assert!(result.is_ok());
 
@@ -1028,8 +1043,6 @@ mod tests {
             client_type: UPClientMqttType::Device,
         };
 
-        println!("{}", topic_map.read().await.len());
-
         assert!(!topic_map.read().await.is_empty());
 
         let result = up_client
@@ -1053,7 +1066,16 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
-        assert!(!topic_map.read().await.is_empty());
+        assert!(topic_map.read().await.is_empty());
+
+        let result = up_client
+            .remove_listener("test_topic", listener_2.clone())
+            .await;
+
+        println!("{:?}", result);
+
+        assert!(result.is_err());
+        assert!(result.err().unwrap().code == UCode::NOT_FOUND.into());
     }
 
     #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/8A50"), None, None, None, None, None, None, None, None, None), 3, None; "Publish success")]
@@ -1123,7 +1145,6 @@ mod tests {
         assert_eq!(&actual_segment, expected_segment);
     }
 
-
     #[test_case("//VIN.vehicles/A8000/2/8A50", None, UPClientMqttType::Device, "d/VIN.vehicles/A8000/2/8A50"; "Subscribe to a specific publish topic")]
     #[test_case("//VIN.vehicles/A8000/2/8A50", Some("//VIN.vehicles/B8000/3/0"), UPClientMqttType::Device, "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0"; "Subscribe to a specific notification topic")]
     #[test_case("//VIN.vehicles/A8000/2/0", Some("//VIN.vehicles/B8000/3/1B50"), UPClientMqttType::Device, "d/VIN.vehicles/A8000/2/0/VIN.vehicles/B8000/3/1B50"; "Request from device")]
@@ -1134,9 +1155,15 @@ mod tests {
     #[test_case(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), Some(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/0")), UPClientMqttType::Cloud, "c/+/+/+/+/VIN.vehicles/+/+/0"; "Streamer subscribe to all notifications, requests and responses to its device from the cloud")]
     #[test_case(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), None, UPClientMqttType::Device, "d/+/+/+/+"; "Subscribe to all publish messages from devices")]
     #[test_case(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), Some(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}")), UPClientMqttType::Device, "d/VIN.vehicles/+/+/+/+/+/+/+"; "Subscribe to all message types but publish messages sent from a UAuthority")]
-    fn test_to_mqtt_topic_string(src_uri: &str, sink_uri: Option<&str>, client_type: UPClientMqttType, expected_topic: &str) {
+    fn test_to_mqtt_topic_string(
+        src_uri: &str,
+        sink_uri: Option<&str>,
+        client_type: UPClientMqttType,
+        expected_topic: &str,
+    ) {
         let src_uri = UUri::from_str(src_uri).expect("expected valid source UUri string.");
-        let sink_uri = sink_uri.map(|uri| UUri::from_str(uri).expect("expected valid sink UUri string."));
+        let sink_uri =
+            sink_uri.map(|uri| UUri::from_str(uri).expect("expected valid sink UUri string."));
 
         let up_client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
@@ -1148,6 +1175,5 @@ mod tests {
         let actual_topic = up_client.to_mqtt_topic_string(&src_uri, sink_uri.as_ref());
 
         assert_eq!(actual_topic, expected_topic);
-
     }
 }
