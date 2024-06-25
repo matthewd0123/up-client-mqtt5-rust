@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use up_rust::{UAttributesValidators, UCode, UListener, UMessage, UStatus, UTransport, UUri};
+use up_rust::{UCode, UListener, UMessage, UStatus, UTransport, UUri};
 
 use crate::UPClientMqtt;
 
@@ -27,15 +27,6 @@ impl UTransport for UPClientMqtt {
             UCode::INVALID_ARGUMENT,
             "Unable to parse uAttributes",
         ))?;
-
-        // validate uattributes content
-        let validator = UAttributesValidators::get_validator_for_attributes(attributes);
-        validator.validate(attributes).map_err(|e| {
-            UStatus::fail_with_code(
-                UCode::INVALID_ARGUMENT,
-                format!("Invalid uAttributes, err: {e:?}"),
-            )
-        })?;
 
         // Get mqtt topic string from source and sink uuris
         let src_uri = attributes.source.as_ref().ok_or(UStatus::fail_with_code(
@@ -93,33 +84,18 @@ mod tests {
     };
 
     use async_std::sync::RwLock;
-    use paho_mqtt::{self as mqtt, MQTT_VERSION_5, QOS_1};
-    use protobuf::Enum;
+    use paho_mqtt::{self as mqtt};
     use up_rust::{
-        ComparableListener, UAttributes, UListener, UMessageType, UPayloadFormat, UPriority,
-        UUIDBuilder, UUID,
+        ComparableListener, UListener, UMessageBuilder, UMessageType, UPayloadFormat, UUID,
     };
 
     use test_case::test_case;
 
-    use crate::{MockableMqttClient, MqttConfig};
+    use crate::{MockableMqttClient, MqttConfig, UPClientMqttType};
 
     use super::*;
 
-    /// Constants defining the protobuf field numbers for UAttributes.
-    pub const ID_NUM: &str = "1";
-    pub const TYPE_NUM: &str = "2";
-    pub const SOURCE_NUM: &str = "3";
-    pub const SINK_NUM: &str = "4";
-    pub const PRIORITY_NUM: &str = "5";
-    pub const TTL_NUM: &str = "6";
-    pub const PERM_LEVEL_NUM: &str = "7";
-    pub const COMMSTATUS_NUM: &str = "8";
-    pub const REQID_NUM: &str = "9";
-    pub const TOKEN_NUM: &str = "10";
-    pub const TRACEPARENT_NUM: &str = "11";
-    pub const PAYLOAD_NUM: &str = "12";
-
+    // Simple listener for testing.
     pub struct SimpleListener {}
 
     #[async_trait]
@@ -133,6 +109,7 @@ mod tests {
         }
     }
 
+    // Mock Mqtt client for testing.
     pub struct MockMqttClient {}
 
     #[async_trait]
@@ -165,241 +142,184 @@ mod tests {
         }
     }
 
-    // Helper function used to create a UAttributes object and mqtt properties object for testing and comparison.
-    #[allow(clippy::too_many_arguments)]
-    fn create_test_uattributes_and_properties(
-        id: Option<UUID>,
-        type_: Option<UMessageType>,
-        source: Option<&str>,
+    // Helper function to construct UMessage object for testing.
+    fn create_test_message(
+        message_type: UMessageType,
+        source: &str,
         sink: Option<&str>,
-        priority: Option<UPriority>,
-        ttl: Option<u32>,
-        perm_level: Option<u32>,
-        commstatus: Option<UCode>,
-        reqid: Option<UUID>,
-        token: Option<&str>,
-        traceparent: Option<&str>,
-        payload_format: Option<UPayloadFormat>,
-    ) -> (UAttributes, mqtt::Properties) {
-        let uattributes = create_uattributes(
-            id.clone(),
-            type_,
-            source,
-            sink,
-            priority,
-            ttl,
-            perm_level,
-            commstatus,
-            reqid.clone(),
-            token,
-            traceparent,
-            payload_format,
-        );
+        payload: String,
+    ) -> Result<UMessage, UStatus> {
+        let source_uri = UUri::from_str(source).expect("Expected a valid source value");
 
-        let properties = create_mqtt_properties(
-            id,
-            type_,
-            source,
-            sink,
-            priority,
-            ttl,
-            perm_level,
-            commstatus,
-            reqid,
-            token,
-            traceparent,
-            payload_format,
-        );
+        match message_type {
+            UMessageType::UMESSAGE_TYPE_PUBLISH => Ok(UMessageBuilder::publish(source_uri)
+                .build_with_payload(payload.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+                .unwrap()),
+            UMessageType::UMESSAGE_TYPE_REQUEST => {
+                let sink_uri =
+                    UUri::from_str(sink.expect("Expected a sink value for request message"))
+                        .expect("Exoected a valid sink value");
 
-        (uattributes, properties)
+                Ok(UMessageBuilder::request(source_uri, sink_uri, 3600)
+                    .build_with_payload(payload.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+                    .unwrap())
+            }
+            UMessageType::UMESSAGE_TYPE_RESPONSE => {
+                let sink_uri =
+                    UUri::from_str(sink.expect("Expected a sink value for request message"))
+                        .expect("Exoected a valid sink value");
+
+                Ok(
+                    UMessageBuilder::response(source_uri, UUID::build(), sink_uri)
+                        .build_with_payload(payload.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+                        .unwrap(),
+                )
+            }
+            UMessageType::UMESSAGE_TYPE_NOTIFICATION => {
+                let sink_uri =
+                    UUri::from_str(sink.expect("Expected a sink value for notification message"))
+                        .expect("Exoected a valid sink value");
+
+                Ok(UMessageBuilder::notification(source_uri, sink_uri)
+                    .build_with_payload(payload, UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
+                    .unwrap())
+            }
+            _ => Err(UStatus::fail_with_code(
+                UCode::INVALID_ARGUMENT,
+                "Invalid message type",
+            )),
+        }
     }
 
-    // Helper function to construct UAttributes object for testing.
-    #[allow(clippy::too_many_arguments)]
-    fn create_uattributes(
-        id: Option<UUID>,
-        type_: Option<UMessageType>,
-        source: Option<&str>,
+    #[test_case(UMessageType::UMESSAGE_TYPE_PUBLISH, "//VIN.vehicles/A8000/2/8A50", None, "payload", None; "Publish success")]
+    #[test_case(UMessageType::UMESSAGE_TYPE_NOTIFICATION, "//VIN.vehicles/A8000/2/1A50", Some("//VIN.vehicles/B8000/3/0"), "payload", None; "Notification success")]
+    #[test_case(UMessageType::UMESSAGE_TYPE_REQUEST, "//VIN.vehicles/A8000/2/1B50", Some("//VIN.vehicles/B8000/3/0"), "payload", None; "Request success")]
+    #[test_case(UMessageType::UMESSAGE_TYPE_RESPONSE, "//VIN.vehicles/B8000/3/0", Some("//VIN.vehicles/A8000/2/1B50"), "payload", None; "Response success")]
+    #[async_std::test]
+    async fn test_send(
+        message_type: UMessageType,
+        source: &str,
         sink: Option<&str>,
-        priority: Option<UPriority>,
-        ttl: Option<u32>,
-        perm_level: Option<u32>,
-        commstatus: Option<UCode>,
-        reqid: Option<UUID>,
-        token: Option<&str>,
-        traceparent: Option<&str>,
-        payload_format: Option<UPayloadFormat>,
-    ) -> UAttributes {
-        let mut attributes = UAttributes::default();
+        payload: &str,
+        expected_error: Option<UStatus>,
+    ) {
+        let client = UPClientMqtt {
+            mqtt_client: Arc::new(MockMqttClient {}),
+            topic_listener_map: Arc::new(RwLock::new(HashMap::new())),
+            authority_name: "VIN.vehicles".to_string(),
+            client_type: UPClientMqttType::Device,
+        };
 
-        if let Some(id) = id {
-            attributes.id = Some(id).into();
+        let message = create_test_message(message_type, source, sink, payload.to_string()).unwrap();
+
+        let result = client.send(message).await;
+
+        if result.is_err() {
+            assert_eq!(result.err().unwrap(), expected_error.unwrap());
+        } else {
+            assert!(result.is_ok());
         }
-
-        if let Some(type_) = type_ {
-            attributes.type_ = type_.into();
-        }
-
-        if let Some(source) = source {
-            attributes.source =
-                Some(UUri::from_str(source).expect("expected valid source UUri string.")).into();
-        }
-
-        if let Some(sink) = sink {
-            attributes.sink =
-                Some(UUri::from_str(sink).expect("expected valid sink UUri string.")).into();
-        }
-
-        if let Some(priority) = priority {
-            attributes.priority = priority.into();
-        }
-
-        if let Some(ttl) = ttl {
-            attributes.ttl = Some(ttl);
-        }
-
-        if let Some(perm_level) = perm_level {
-            attributes.permission_level = Some(perm_level);
-        }
-
-        if let Some(commstatus) = commstatus {
-            attributes.commstatus = Some(commstatus.into());
-        }
-
-        if let Some(reqid) = reqid {
-            attributes.reqid = Some(reqid).into();
-        }
-
-        if let Some(token) = token {
-            attributes.token = Some(token.to_string());
-        }
-
-        if let Some(traceparent) = traceparent {
-            attributes.traceparent = Some(traceparent.to_string());
-        }
-
-        if let Some(payload_format) = payload_format {
-            attributes.payload_format = payload_format.into();
-        }
-
-        attributes
     }
 
-    // Helper function to create mqtt properties for testing.
-    #[allow(clippy::too_many_arguments)]
-    fn create_mqtt_properties(
-        id: Option<UUID>,
-        type_: Option<UMessageType>,
-        source: Option<&str>,
-        sink: Option<&str>,
-        priority: Option<UPriority>,
-        ttl: Option<u32>,
-        perm_level: Option<u32>,
-        commstatus: Option<UCode>,
-        reqid: Option<UUID>,
-        token: Option<&str>,
-        traceparent: Option<&str>,
-        payload_format: Option<UPayloadFormat>,
-    ) -> mqtt::Properties {
-        let mut properties = mqtt::Properties::new();
+    #[test_case("//VIN.vehicles/A8000/2/8A50", None, "d/VIN.vehicles/A8000/2/8A50", None; "Register listener success")]
+    #[test_case("//VIN.vehicles/A8000/2/8A50", Some("//VIN.vehicles/B8000/3/0"), "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0", None; "Register listener with sink success")]
+    #[async_std::test]
+    async fn test_register_listener(
+        source_filter: &str,
+        sink_filter: Option<&str>,
+        expected_topic: &str,
+        expected_error: Option<UStatus>,
+    ) {
+        let topic_listener_map = Arc::new(RwLock::new(HashMap::new()));
 
-        if let Some(id_val) = id {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    ID_NUM,
-                    &id_val.to_hyphenated_string(),
-                )
-                .unwrap();
-        }
-        if let Some(type_val) = type_ {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    TYPE_NUM,
-                    &type_val.value().to_string(),
-                )
-                .unwrap();
-        }
-        if let Some(source_val) = source {
-            properties
-                .push_string_pair(mqtt::PropertyCode::UserProperty, SOURCE_NUM, source_val)
-                .unwrap();
-        }
-        if let Some(sink_val) = sink {
-            properties
-                .push_string_pair(mqtt::PropertyCode::UserProperty, SINK_NUM, sink_val)
-                .unwrap();
-        }
-        if let Some(priority_val) = priority {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    PRIORITY_NUM,
-                    &priority_val.value().to_string(),
-                )
-                .unwrap();
-        }
-        if let Some(ttl_val) = ttl {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    TTL_NUM,
-                    &ttl_val.to_string(),
-                )
-                .unwrap();
-        }
-        if let Some(perm_level_val) = perm_level {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    PERM_LEVEL_NUM,
-                    &perm_level_val.to_string(),
-                )
-                .unwrap();
-        }
-        if let Some(commstatus_val) = commstatus {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    COMMSTATUS_NUM,
-                    &commstatus_val.value().to_string(),
-                )
-                .unwrap();
-        }
-        if let Some(reqid_val) = reqid {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    REQID_NUM,
-                    &reqid_val.to_hyphenated_string(),
-                )
-                .unwrap();
-        }
-        if let Some(token_val) = token {
-            properties
-                .push_string_pair(mqtt::PropertyCode::UserProperty, TOKEN_NUM, token_val)
-                .unwrap();
-        }
-        if let Some(traceparent_val) = traceparent {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    TRACEPARENT_NUM,
-                    traceparent_val,
-                )
-                .unwrap();
-        }
-        if let Some(payload_format_val) = payload_format {
-            properties
-                .push_string_pair(
-                    mqtt::PropertyCode::UserProperty,
-                    PAYLOAD_NUM,
-                    &payload_format_val.value().to_string(),
-                )
-                .unwrap();
+        let client = UPClientMqtt {
+            mqtt_client: Arc::new(MockMqttClient {}),
+            topic_listener_map,
+            authority_name: "VIN.vehicles".to_string(),
+            client_type: UPClientMqttType::Device,
+        };
+
+        let listener = Arc::new(SimpleListener {});
+
+        let source_uri = UUri::from_str(source_filter).expect("Expected a valid source value");
+
+        let sink_uri = sink_filter.map(|s| UUri::from_str(s).expect("Expected a valid sink value"));
+
+        let result = client
+            .register_listener(&source_uri, sink_uri.as_ref(), listener.clone())
+            .await;
+
+        if result.is_err() {
+            assert_eq!(result.err().unwrap(), expected_error.unwrap());
+        } else {
+            assert!(result.is_ok());
         }
 
-        properties
+        let topic_map = client.topic_listener_map.read().await;
+
+        assert!(topic_map.contains_key(expected_topic));
+
+        let listeners = topic_map.get(expected_topic).unwrap();
+
+        assert!(listeners.contains(&ComparableListener::new(listener)));
+    }
+
+    #[test_case("//VIN.vehicles/A8000/2/8A50", None, "d/VIN.vehicles/A8000/2/8A50", None; "Unregister listener success")]
+    #[test_case("//VIN.vehicles/A8000/2/8A50", Some("//VIN.vehicles/B8000/3/0"), "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0", None; "Unregister listener with sink success")]
+    #[async_std::test]
+    async fn test_unregister_listener(
+        source_filter: &str,
+        sink_filter: Option<&str>,
+        expected_topic: &str,
+        expected_error: Option<UStatus>,
+    ) {
+        let topic_listener_map = Arc::new(RwLock::new(HashMap::new()));
+
+        let listener = Arc::new(SimpleListener {});
+        let comparable_listener = ComparableListener::new(listener.clone());
+
+        topic_listener_map.write().await.insert(
+            expected_topic.to_string(),
+            [comparable_listener.clone()].iter().cloned().collect(),
+        );
+
+        let client = UPClientMqtt {
+            mqtt_client: Arc::new(MockMqttClient {}),
+            topic_listener_map,
+            authority_name: "VIN.vehicles".to_string(),
+            client_type: UPClientMqttType::Device,
+        };
+
+        let source_uri = UUri::from_str(source_filter).expect("Expected a valid source value");
+
+        let sink_uri = sink_filter.map(|s| UUri::from_str(s).expect("Expected a valid sink value"));
+
+        let result = client
+            .unregister_listener(&source_uri, sink_uri.as_ref(), listener.clone())
+            .await;
+
+        if result.is_err() {
+            assert_eq!(result.err().unwrap(), expected_error.unwrap());
+        } else {
+            assert!(result.is_ok());
+        }
+
+        {
+            let topic_map = client.topic_listener_map.read().await;
+            assert!(!topic_map.contains_key(expected_topic));
+        }
+
+        let empty_result = client
+            .unregister_listener(&source_uri, sink_uri.as_ref(), listener.clone())
+            .await;
+
+        assert!(empty_result.is_err());
+        assert_eq!(
+            empty_result.err().unwrap(),
+            UStatus::fail_with_code(
+                UCode::NOT_FOUND,
+                format!("Topic '{expected_topic}' is not registered.")
+            )
+        );
     }
 }

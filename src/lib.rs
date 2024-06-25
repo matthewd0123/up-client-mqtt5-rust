@@ -29,7 +29,6 @@ use up_rust::{
     ComparableListener, UAttributes, UAttributesValidators, UCode, UMessage, UStatus, UUri, UUID,
 };
 
-pub mod rpc;
 pub mod transport;
 
 // URI Wildcard consts
@@ -39,9 +38,14 @@ const WILDCARD_ENTITY_ID: u32 = 0x0000_FFFF;
 const WILDCARD_ENTITY_VERSION: u32 = 0x0000_00FF;
 const WILDCARD_RESOURCE_ID: u32 = 0x0000_FFFF;
 
-// Trait that allows for a mockable Mqtt client.
+/// Trait that allows for a mockable mqtt client.
 #[async_trait]
 pub trait MockableMqttClient: Sync + Send {
+    /// Create a new UPClientMqtt.
+    ///
+    /// # Arguments
+    /// * `config` - Configuration for the mqtt client.
+    /// * `client_id` - Client id for the mqtt client.
     async fn new_client(
         config: MqttConfig,
         client_id: UUID,
@@ -54,10 +58,22 @@ pub trait MockableMqttClient: Sync + Send {
     where
         Self: Sized;
 
+    /// Publish an mqtt message to the mqtt broker.
+    ///
+    /// # Arguments
+    /// * `topic` - Topic to subscribe to.
     async fn publish(&self, mqtt_message: mqtt::Message) -> Result<(), UStatus>;
 
+    /// Subscribe the mqtt client to a topic.
+    ///
+    /// # Arguments
+    /// * `topic` - Topic to subscribe to.
     async fn subscribe(&self, topic: &str) -> Result<(), UStatus>;
 
+    /// Unsubscribe the mqtt client to a topic.
+    ///
+    /// # Arguments
+    /// * `topic` - Topic to subscribe to.
     async fn unsubscribe(&self, topic: &str) -> Result<(), UStatus>;
 }
 
@@ -131,6 +147,10 @@ impl MockableMqttClient for AsyncMqttClient {
         })
     }
 
+    /// Publish an mqtt message to the mqtt broker.
+    ///
+    /// # Arguments
+    /// * `topic` - Topic to subscribe to.
     async fn publish(&self, mqtt_message: mqtt::Message) -> Result<(), UStatus> {
         self.inner_mqtt_client
             .publish(mqtt_message)
@@ -145,7 +165,7 @@ impl MockableMqttClient for AsyncMqttClient {
         Ok(())
     }
 
-    /// Helper function for subscribing the mqtt client to a topic.
+    /// Subscribe the mqtt client to a topic.
     ///
     /// # Arguments
     /// * `topic` - Topic to subscribe to.
@@ -164,10 +184,10 @@ impl MockableMqttClient for AsyncMqttClient {
         Ok(())
     }
 
-    /// Helper function for unsubscribing the mqtt client from a topic.
+    /// Unsubscribe the mqtt client to a topic.
     ///
     /// # Arguments
-    /// * `topic` - Topic to unsubscribe from.
+    /// * `topic` - Topic to subscribe to.
     async fn unsubscribe(&self, topic: &str) -> Result<(), UStatus> {
         self.inner_mqtt_client
             .unsubscribe(topic)
@@ -207,6 +227,7 @@ pub struct UPClientMqtt {
     client_type: UPClientMqttType,
 }
 
+/// Type of UPClientMqtt.
 pub enum UPClientMqttType {
     Device,
     Cloud,
@@ -254,7 +275,9 @@ impl UPClientMqtt {
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
     ) {
         if let Some(msg) = message {
+            println!("Received message: {:?}", msg);
             let topic = msg.topic();
+            println!("Topic: {:?}", topic);
 
             // Get attributes from mqtt header.
             let uattributes =
@@ -303,6 +326,7 @@ impl UPClientMqtt {
         attributes: &UAttributes,
         payload: Option<Bytes>,
     ) -> Result<(), UStatus> {
+        println!("Sending message to topic: {}", topic);
         let props = UPClientMqtt::create_mqtt_properties_from_uattributes(attributes)?;
 
         let mut msg_builder = mqtt::MessageBuilder::new()
@@ -336,6 +360,8 @@ impl UPClientMqtt {
         topic: &str,
         listener: Arc<dyn up_rust::UListener>,
     ) -> Result<(), UStatus> {
+        println!("Adding listener to topic: {}", topic);
+
         let mut topic_listener_map = self.topic_listener_map.write().await;
 
         if !topic_listener_map.contains_key(topic) {
@@ -385,7 +411,7 @@ impl UPClientMqtt {
         } else {
             return Err(UStatus::fail_with_code(
                 UCode::NOT_FOUND,
-                "Topic '{topic:?}' is not registered.",
+                format!("Topic '{topic}' is not registered."),
             ));
         }
 
@@ -690,7 +716,7 @@ impl UPClientMqtt {
 #[cfg(test)]
 mod tests {
     use protobuf::Enum;
-    use up_rust::{UListener, UMessageType, UPayloadFormat, UPriority, UUIDBuilder};
+    use up_rust::{UListener, UMessageType, UPayloadFormat, UPriority, UUID};
 
     use test_case::test_case;
 
@@ -710,6 +736,7 @@ mod tests {
     pub const TRACEPARENT_NUM: &str = "11";
     pub const PAYLOAD_NUM: &str = "12";
 
+    // Simple listener for testing.
     pub struct SimpleListener {}
 
     #[async_trait]
@@ -723,6 +750,7 @@ mod tests {
         }
     }
 
+    // Mock Mqtt client for testing.
     pub struct MockMqttClient {}
 
     #[async_trait]
@@ -1078,11 +1106,11 @@ mod tests {
         assert!(result.err().unwrap().code == UCode::NOT_FOUND.into());
     }
 
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/8A50"), None, None, None, None, None, None, None, None, None), 3, None; "Publish success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION), Some("//VIN.vehicles/A8000/2/1A50"), Some("//VIN.vehicles/B8000/3/0"), None, None, None, None, None, None, None, None), 4, None; "Notification success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_REQUEST), Some("//VIN.vehicles/A8000/2/0"), Some("//VIN.vehicles/B8000/3/1B50"), Some(UPriority::UPRIORITY_CS4), Some(3600), None, None, None, None, None, None), 6, None; "Request success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_RESPONSE), Some("//VIN.vehicles/B8000/3/1B50"), Some("//VIN.vehicles/A8000/2/0"), Some(UPriority::UPRIORITY_CS4), None, None, None, Some(UUIDBuilder::build()), None, None, None), 6, None; "Response success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/1A50"), None, None, None, None, None, None, None, None, None), 3, Some(UStatus::fail_with_code(UCode::INTERNAL, "Invalid uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string())); "Publish failure with validation error")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/8A50"), None, None, None, None, None, None, None, None, None), 3, None; "Publish success")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION), Some("//VIN.vehicles/A8000/2/1A50"), Some("//VIN.vehicles/B8000/3/0"), None, None, None, None, None, None, None, None), 4, None; "Notification success")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_REQUEST), Some("//VIN.vehicles/A8000/2/0"), Some("//VIN.vehicles/B8000/3/1B50"), Some(UPriority::UPRIORITY_CS4), Some(3600), None, None, None, None, None, None), 6, None; "Request success")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_RESPONSE), Some("//VIN.vehicles/B8000/3/1B50"), Some("//VIN.vehicles/A8000/2/0"), Some(UPriority::UPRIORITY_CS4), None, None, None, Some(UUID::build()), None, None, None), 6, None; "Response success")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/1A50"), None, None, None, None, None, None, None, None, None), 3, Some(UStatus::fail_with_code(UCode::INTERNAL, "Invalid uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string())); "Publish failure with validation error")]
     fn test_create_mqtt_properties_from_uattributes(
         (attributes, properties): (UAttributes, mqtt::Properties),
         expected_attributes_num: usize,
@@ -1102,11 +1130,11 @@ mod tests {
         }
     }
 
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/8A50"), None, None, None, None, None, None, None, None, None), None; "Publish success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION), Some("//VIN.vehicles/A8000/2/1A50"), Some("//VIN.vehicles/B8000/3/0"), None, None, None, None, None, None, None, None), None; "Notification success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_REQUEST), Some("//VIN.vehicles/A8000/2/0"), Some("//VIN.vehicles/B8000/3/1B50"), Some(UPriority::UPRIORITY_CS4), Some(3600), None, None, None, None, None, None), None; "Request success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_RESPONSE), Some("//VIN.vehicles/B8000/3/1B50"), Some("//VIN.vehicles/A8000/2/0"), Some(UPriority::UPRIORITY_CS4), None, None, None, Some(UUIDBuilder::build()), None, None, None), None; "Response success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUIDBuilder::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/1A50"), None, None, None, None, None, None, None, None, None), Some(UStatus::fail_with_code(UCode::INTERNAL, "Unable to construct uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string())); "Publish failure with validation error")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/8A50"), None, None, None, None, None, None, None, None, None), None; "Publish success")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION), Some("//VIN.vehicles/A8000/2/1A50"), Some("//VIN.vehicles/B8000/3/0"), None, None, None, None, None, None, None, None), None; "Notification success")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_REQUEST), Some("//VIN.vehicles/A8000/2/0"), Some("//VIN.vehicles/B8000/3/1B50"), Some(UPriority::UPRIORITY_CS4), Some(3600), None, None, None, None, None, None), None; "Request success")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_RESPONSE), Some("//VIN.vehicles/B8000/3/1B50"), Some("//VIN.vehicles/A8000/2/0"), Some(UPriority::UPRIORITY_CS4), None, None, None, Some(UUID::build()), None, None, None), None; "Response success")]
+    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/1A50"), None, None, None, None, None, None, None, None, None), Some(UStatus::fail_with_code(UCode::INTERNAL, "Unable to construct uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string())); "Publish failure with validation error")]
     fn test_get_uattributes_from_mqtt_properties(
         (attributes, properties): (UAttributes, mqtt::Properties),
         expected_error: Option<UStatus>,
