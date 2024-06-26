@@ -306,13 +306,10 @@ impl UPClientMqtt {
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
     ) {
         if let Some(msg) = message {
-            //println!("Received message: {:?}", msg);
             let topic = msg.topic();
             let sub_id = msg
                 .properties()
                 .get_int(mqtt::PropertyCode::SubscriptionIdentifier);
-            println!("Sub ID: {:?}", sub_id);
-            //println!("Topic: {:?}", topic);
 
             // Get attributes from mqtt header.
             let uattributes_res =
@@ -345,8 +342,6 @@ impl UPClientMqtt {
             if let Some(sub_id) = sub_id {
                 if let Some(sub_topic) = subscription_map_read.get(&sub_id) {
                     if let Some(listeners) = topic_map_read.get(sub_topic) {
-                        println!("topic: {topic}, listeners: {}", listeners.len());
-
                         listeners.iter().for_each(|listener| {
                             let umsg_clone = umessage.clone(); // need to clone outside of closure.
                             block_on(listener.on_receive(umsg_clone));
@@ -358,9 +353,7 @@ impl UPClientMqtt {
                 topic_map_read
                     .iter()
                     .filter(|(key, _)| UPClientMqtt::compare_topic(topic, key))
-                    .for_each(|(topic, listeners)| {
-                        println!("topic: {topic}, listeners: {}", listeners.len());
-
+                    .for_each(|(_topic, listeners)| {
                         listeners.iter().for_each(|listener| {
                             let umsg_clone = umessage.clone(); // need to clone outside of closure.
                             block_on(listener.on_receive(umsg_clone));
@@ -433,7 +426,7 @@ impl UPClientMqtt {
         attributes: &UAttributes,
         payload: Option<Bytes>,
     ) -> Result<(), UStatus> {
-        println!("Sending message to topic: {}", topic);
+        info!("Sending message to topic: {}", topic);
         let props = UPClientMqtt::create_mqtt_properties_from_uattributes(attributes)?;
 
         let mut msg_builder = mqtt::MessageBuilder::new()
@@ -467,20 +460,16 @@ impl UPClientMqtt {
         topic: &str,
         listener: Arc<dyn up_rust::UListener>,
     ) -> Result<(), UStatus> {
-        println!("Adding listener to topic: {}", topic);
+        info!("Adding listener to topic: {}", topic);
 
         let mut topic_listener_map = self.topic_listener_map.write().await;
 
         if !topic_listener_map.contains_key(topic) {
             let id = self.get_free_subscription_id().await?;
-            println!("New Subscription ID is {id} for topic {topic}");
             let mut subscription_topic_map = self.subscription_topic_map.write().await;
-            println!("got handle");
             subscription_topic_map.insert(id, topic.to_string());
-            println!("inserted");
             // Subscribe to topic.
             self.mqtt_client.subscribe(topic, id).await?;
-            println!("subscribed");
         }
 
         let listeners = topic_listener_map
@@ -491,7 +480,6 @@ impl UPClientMqtt {
         let comp_listener = ComparableListener::new(listener);
         listeners.insert(comp_listener);
 
-        println!("Added listener");
         Ok(())
     }
 
@@ -1299,8 +1287,6 @@ mod tests {
             .remove_listener("test_topic", listener_2.clone())
             .await;
 
-        println!("{:?}", result);
-
         assert!(result.is_err());
         assert!(result.err().unwrap().code == UCode::NOT_FOUND.into());
     }
@@ -1357,8 +1343,6 @@ mod tests {
 
     fn test_uri_to_mqtt_topic_segment(uuri: &str, expected_segment: &str) {
         let uuri = UUri::from_str(uuri).expect("expected valid UUri string.");
-
-        println!("{:?}", uuri);
 
         let up_client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
