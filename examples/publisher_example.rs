@@ -35,8 +35,8 @@ async fn main() -> Result<(), UStatus> {
     )
     .await?;
 
-    let source = UUri::from_str(&format!("//Vehicle_B/A8000/2/8A50"))
-        .expect("Failed to create source filter");
+    let source =
+        UUri::from_str("//Vehicle_B/A8000/2/8A50").expect("Failed to create source filter");
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;

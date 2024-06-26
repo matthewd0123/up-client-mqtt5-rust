@@ -343,16 +343,16 @@ impl UPClientMqtt {
 
             // If subscription ID is present, only notify listeners for that subscription.
             if let Some(sub_id) = sub_id {
-                subscription_map_read.get(&sub_id).map(|sub_topic| {
-                    topic_map_read.get(sub_topic).map(|listeners| {
+                if let Some(sub_topic) = subscription_map_read.get(&sub_id) {
+                    if let Some(listeners) = topic_map_read.get(sub_topic) {
                         println!("topic: {topic}, listeners: {}", listeners.len());
 
                         listeners.iter().for_each(|listener| {
                             let umsg_clone = umessage.clone(); // need to clone outside of closure.
                             block_on(listener.on_receive(umsg_clone));
                         });
-                    });
-                });
+                    };
+                }
             } else {
                 // Filter the topic map for topics that match the received topic, including wildcards.
                 topic_map_read
@@ -376,14 +376,12 @@ impl UPClientMqtt {
     /// * `topic` - Topic to compare.
     /// * `pattern` - Topic pattern to compare against.
     fn compare_topic(topic: &str, pattern: &str) -> bool {
-        let topic_parts = topic.split("/");
-        let pattern_parts = pattern.split("/");
+        let topic_parts = topic.split('/');
+        let pattern_parts = pattern.split('/');
 
         for (topic_part, pattern_part) in topic_parts.zip(pattern_parts) {
-            if topic_part != pattern_part {
-                if pattern_part != "+" {
-                    return false;
-                }
+            if topic_part != pattern_part && pattern_part != "+" {
+                return false;
             }
         }
 
@@ -522,7 +520,7 @@ impl UPClientMqtt {
             // Remove topic if no listeners are left.
             if topic_listener_map.get(topic).unwrap().is_empty() {
                 let sub_id = subscription_topic_map.iter_mut().find_map(|(k, v)| {
-                    if v == &topic {
+                    if v == topic {
                         Some(*k)
                     } else {
                         None

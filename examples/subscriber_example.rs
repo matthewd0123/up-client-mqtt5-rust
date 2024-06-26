@@ -64,20 +64,10 @@ async fn main() -> Result<(), UStatus> {
     ))
     .expect("Failed to create source filter");
 
-    let source_filter_2 = UUri::from_str(&format!(
-        //"//Vehicle_B/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"
-        "//Vehicle_B/A8000/2/8A50"
-    ))
-    .expect("Failed to create source filter");
-
     println!("Subscribing to: {}", source_filter.to_uri(false));
 
     client
         .register_listener(&source_filter, None, listener.clone())
-        .await?;
-
-    client
-        .register_listener(&source_filter_2, None, listener)
         .await?;
 
     loop {
