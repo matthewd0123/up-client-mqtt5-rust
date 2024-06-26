@@ -253,7 +253,6 @@ pub enum UPClientMqttType {
     Cloud,
 }
 
-#[allow(dead_code)]
 impl UPClientMqtt {
     /// Create a new UPClientMqtt.
     ///
@@ -523,6 +522,9 @@ impl UPClientMqtt {
                 if let Some(sub_id) = sub_id {
                     // Remove subscription id from map.
                     subscription_topic_map.remove(&sub_id);
+
+                    // Add subscription id back to free subscription ids.
+                    self.add_free_subscription_id(sub_id).await;
                 }
 
                 topic_listener_map.remove(topic);
