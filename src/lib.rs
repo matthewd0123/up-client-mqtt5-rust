@@ -315,8 +315,18 @@ impl UPClientMqtt {
             //println!("Topic: {:?}", topic);
 
             // Get attributes from mqtt header.
-            let uattributes =
-                UPClientMqtt::get_uattributes_from_mqtt_properties(msg.properties()).unwrap();
+            let uattributes_res =
+                UPClientMqtt::get_uattributes_from_mqtt_properties(msg.properties());
+
+            if uattributes_res.is_err() {
+                warn!(
+                    "Unable to get UAttributes from mqtt properties: {}",
+                    uattributes_res.err().unwrap()
+                );
+                return;
+            }
+
+            let uattributes = uattributes_res.unwrap();
 
             let payload = msg.payload();
             let upayload = payload.to_vec();
