@@ -51,8 +51,10 @@ pub trait MockableMqttClient: Sync + Send {
         client_id: UUID,
         on_receive: fn(
             Option<paho_mqtt::Message>,
+            Arc<RwLock<HashMap<i32, String>>>,
             Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
         ),
+        subscription_map: Arc<RwLock<HashMap<i32, String>>>,
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
     ) -> Result<Self, UStatus>
     where
@@ -68,7 +70,8 @@ pub trait MockableMqttClient: Sync + Send {
     ///
     /// # Arguments
     /// * `topic` - Topic to subscribe to.
-    async fn subscribe(&self, topic: &str) -> Result<(), UStatus>;
+    /// * `id` - Subscription ID for the topic, used to prevent duplication.
+    async fn subscribe(&self, topic: &str, id: i32) -> Result<(), UStatus>;
 
     /// Unsubscribe the mqtt client to a topic.
     ///
@@ -79,6 +82,13 @@ pub trait MockableMqttClient: Sync + Send {
 
 pub struct AsyncMqttClient {
     inner_mqtt_client: Arc<mqtt::AsyncClient>,
+}
+
+// Create a set of poperties with a single Subscription ID
+pub fn sub_id(id: i32) -> mqtt::Properties {
+    mqtt::properties![
+        mqtt::PropertyCode::SubscriptionIdentifier => id
+    ]
 }
 
 #[async_trait]
@@ -93,8 +103,10 @@ impl MockableMqttClient for AsyncMqttClient {
         client_id: UUID,
         on_receive: fn(
             Option<paho_mqtt::Message>,
+            Arc<RwLock<HashMap<i32, String>>>,
             Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
         ),
+        subscription_map: Arc<RwLock<HashMap<i32, String>>>,
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
     ) -> Result<Self, UStatus>
     where
@@ -125,7 +137,7 @@ impl MockableMqttClient for AsyncMqttClient {
 
         mqtt_cli.set_message_callback(
             move |_cli: &AsyncClient, message: Option<paho_mqtt::Message>| {
-                on_receive(message, topic_map.clone())
+                on_receive(message, subscription_map.clone(), topic_map.clone())
             },
         );
 
@@ -169,10 +181,10 @@ impl MockableMqttClient for AsyncMqttClient {
     ///
     /// # Arguments
     /// * `topic` - Topic to subscribe to.
-    async fn subscribe(&self, topic: &str) -> Result<(), UStatus> {
+    async fn subscribe(&self, topic: &str, id: i32) -> Result<(), UStatus> {
         // QOS 1 - Delivered and received at least once
         self.inner_mqtt_client
-            .subscribe(topic, QOS_1)
+            .subscribe_with_options(topic, QOS_1, None, sub_id(id))
             .await
             .map_err(|e| {
                 UStatus::fail_with_code(
@@ -211,6 +223,8 @@ pub struct MqttConfig {
     pub mqtt_hostname: String,
     /// Max buffered messages for the mqtt client.
     pub max_buffered_messages: i32,
+    /// Max subscriptions for the mqtt client.
+    pub max_subscriptions: i32,
     /// Session Expiry Interval for the mqtt client.
     pub session_expiry_interval: i32,
     /// Optional SSL options for the mqtt connection.
@@ -219,12 +233,18 @@ pub struct MqttConfig {
 
 /// UP Client for mqtt.
 pub struct UPClientMqtt {
+    /// Client instance for connecting to mqtt broker.
     mqtt_client: Arc<dyn MockableMqttClient>,
+    /// Map of subscription identifiers to subscribed topics.
+    subscription_topic_map: Arc<RwLock<HashMap<i32, String>>>,
+    /// Map of topics to listeners.
     topic_listener_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-    // My authority
+    /// My authority
     authority_name: String,
-    // Indicates where client instance is running.
+    /// Indicates where client instance is running.
     client_type: UPClientMqttType,
+    /// List of free subscription identifiers to use for the client subscriptions.
+    free_subscription_ids: Arc<RwLock<HashSet<i32>>>,
 }
 
 /// Type of UPClientMqtt.
@@ -240,29 +260,38 @@ impl UPClientMqtt {
     /// # Arguments
     /// * `config` - Configuration for the mqtt client.
     /// * `client_id` - Client id for the mqtt client.
+    /// * `authority_name` - Authority name for the mqtt client.
+    /// * `client_type` - Type of client instance.
     pub async fn new(
         config: MqttConfig,
         client_id: UUID,
         authority_name: String,
         client_type: UPClientMqttType,
     ) -> Result<Self, UStatus> {
+        let subscription_topic_map = Arc::new(RwLock::new(HashMap::new()));
         let topic_listener_map = Arc::new(RwLock::new(HashMap::new()));
+        let free_subscription_ids =
+            Arc::new(RwLock::new((1..config.max_subscriptions + 1).collect()));
 
+        let subscription_topic_map_handle = subscription_topic_map.clone();
         let topic_listener_map_handle = topic_listener_map.clone();
 
         let mqtt_client = AsyncMqttClient::new_client(
             config,
             client_id,
             UPClientMqtt::on_receive,
+            subscription_topic_map_handle,
             topic_listener_map_handle,
         )
         .await?;
 
         Ok(Self {
             mqtt_client: Arc::new(mqtt_client),
+            subscription_topic_map,
             topic_listener_map,
             authority_name,
             client_type,
+            free_subscription_ids,
         })
     }
 
@@ -270,14 +299,21 @@ impl UPClientMqtt {
     ///
     /// # Arguments
     /// * `message` - MQTT message received.
+    /// * `subscription_map` - Map of subscription identifiers to subscribed topics.
+    /// * `topic_map` - Map of topics to listeners.
     fn on_receive(
         message: Option<paho_mqtt::Message>,
+        subscription_map: Arc<RwLock<HashMap<i32, String>>>,
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
     ) {
         if let Some(msg) = message {
-            println!("Received message: {:?}", msg);
+            //println!("Received message: {:?}", msg);
             let topic = msg.topic();
-            println!("Topic: {:?}", topic);
+            let sub_id = msg
+                .properties()
+                .get_int(mqtt::PropertyCode::SubscriptionIdentifier);
+            println!("Sub ID: {:?}", sub_id);
+            //println!("Topic: {:?}", topic);
 
             // Get attributes from mqtt header.
             let uattributes =
@@ -286,23 +322,87 @@ impl UPClientMqtt {
             let payload = msg.payload();
             let upayload = payload.to_vec();
 
+            // Create UMessage from UAttributes and UPayload.
             let umessage = UMessage {
                 attributes: Some(uattributes).into(),
                 payload: Some(upayload.into()),
                 ..Default::default()
             };
 
-            // Create UMessage from UAttributes and UPayload.
             let topic_map_read = block_on(topic_map.read());
-            let listeners = topic_map_read.get(topic);
+            let subscription_map_read = block_on(subscription_map.read());
 
-            if let Some(listeners) = listeners {
-                for listener in listeners {
-                    let umsg_clone = umessage.clone(); // need to clone outside of closure.
-                    block_on(listener.on_receive(umsg_clone));
+            // If subscription ID is present, only notify listeners for that subscription.
+            if let Some(sub_id) = sub_id {
+                subscription_map_read.get(&sub_id).map(|sub_topic| {
+                    topic_map_read.get(sub_topic).map(|listeners| {
+                        println!("topic: {topic}, listeners: {}", listeners.len());
+
+                        listeners.iter().for_each(|listener| {
+                            let umsg_clone = umessage.clone(); // need to clone outside of closure.
+                            block_on(listener.on_receive(umsg_clone));
+                        });
+                    });
+                });
+            } else {
+                // Filter the topic map for topics that match the received topic, including wildcards.
+                topic_map_read
+                    .iter()
+                    .filter(|(key, _)| UPClientMqtt::compare_topic(topic, key))
+                    .for_each(|(topic, listeners)| {
+                        println!("topic: {topic}, listeners: {}", listeners.len());
+
+                        listeners.iter().for_each(|listener| {
+                            let umsg_clone = umessage.clone(); // need to clone outside of closure.
+                            block_on(listener.on_receive(umsg_clone));
+                        });
+                    });
+            }
+        }
+    }
+
+    /// Compare a topic to a topic pattern. Supports single level wildcards.
+    ///
+    /// # Arguments
+    /// * `topic` - Topic to compare.
+    /// * `pattern` - Topic pattern to compare against.
+    fn compare_topic(topic: &str, pattern: &str) -> bool {
+        let topic_parts = topic.split("/");
+        let pattern_parts = pattern.split("/");
+
+        for (topic_part, pattern_part) in topic_parts.zip(pattern_parts) {
+            if topic_part != pattern_part {
+                if pattern_part != "+" {
+                    return false;
                 }
             }
         }
+
+        true
+    }
+
+    /// Get an available subscription id to use.
+    async fn get_free_subscription_id(&self) -> Result<i32, UStatus> {
+        // Get a random subscription id from the free subscription ids.
+        let mut free_ids = self.free_subscription_ids.write().await;
+        if let Some(&id) = free_ids.iter().next() {
+            free_ids.remove(&id);
+            Ok(id)
+        } else {
+            Err(UStatus::fail_with_code(
+                UCode::INTERNAL,
+                "Max number of subscriptions reached on this client.",
+            ))
+        }
+    }
+
+    /// Add an unused subscription id to the free subscription ids.
+    ///
+    /// # Arguments
+    /// * `id` - Subscription id to add to the free subscription ids.
+    async fn add_free_subscription_id(&self, id: i32) {
+        let mut free_ids = self.free_subscription_ids.write().await;
+        free_ids.insert(id);
     }
 
     /// Get the client indicator based on client type.
@@ -365,8 +465,15 @@ impl UPClientMqtt {
         let mut topic_listener_map = self.topic_listener_map.write().await;
 
         if !topic_listener_map.contains_key(topic) {
+            let id = self.get_free_subscription_id().await?;
+            println!("New Subscription ID is {id} for topic {topic}");
+            let mut subscription_topic_map = self.subscription_topic_map.write().await;
+            println!("got handle");
+            subscription_topic_map.insert(id, topic.to_string());
+            println!("inserted");
             // Subscribe to topic.
-            self.mqtt_client.subscribe(topic).await?;
+            self.mqtt_client.subscribe(topic, id).await?;
+            println!("subscribed");
         }
 
         let listeners = topic_listener_map
@@ -377,6 +484,7 @@ impl UPClientMqtt {
         let comp_listener = ComparableListener::new(listener);
         listeners.insert(comp_listener);
 
+        println!("Added listener");
         Ok(())
     }
 
@@ -391,6 +499,7 @@ impl UPClientMqtt {
         listener: Arc<dyn up_rust::UListener>,
     ) -> Result<(), UStatus> {
         let mut topic_listener_map = self.topic_listener_map.write().await;
+        let mut subscription_topic_map = self.subscription_topic_map.write().await;
 
         if topic_listener_map.contains_key(topic) {
             topic_listener_map
@@ -403,6 +512,19 @@ impl UPClientMqtt {
 
             // Remove topic if no listeners are left.
             if topic_listener_map.get(topic).unwrap().is_empty() {
+                let sub_id = subscription_topic_map.iter_mut().find_map(|(k, v)| {
+                    if v == &topic {
+                        Some(*k)
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(sub_id) = sub_id {
+                    // Remove subscription id from map.
+                    subscription_topic_map.remove(&sub_id);
+                }
+
                 topic_listener_map.remove(topic);
 
                 // Unsubscribe from topic.
@@ -760,8 +882,10 @@ mod tests {
             _client_id: UUID,
             _on_receive: fn(
                 Option<paho_mqtt::Message>,
+                Arc<RwLock<HashMap<i32, String>>>,
                 Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
             ),
+            _subscription_map: Arc<RwLock<HashMap<i32, String>>>,
             _topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
         ) -> Result<Self, UStatus>
         where
@@ -774,7 +898,7 @@ mod tests {
             Ok(())
         }
 
-        async fn subscribe(&self, _topic: &str) -> Result<(), UStatus> {
+        async fn subscribe(&self, _topic: &str, _id: i32) -> Result<(), UStatus> {
             Ok(())
         }
 
@@ -1022,16 +1146,78 @@ mod tests {
     }
 
     #[async_std::test]
+    async fn test_get_free_subscription_id() {
+        let up_client = UPClientMqtt {
+            mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: Arc::new(RwLock::new(HashMap::new())),
+            topic_listener_map: Arc::new(RwLock::new(HashMap::new())),
+            authority_name: "test".to_string(),
+            client_type: UPClientMqttType::Device,
+            free_subscription_ids: Arc::new(RwLock::new((1..3).collect())),
+        };
+
+        let expected_vals: Vec<i32> = up_client
+            .free_subscription_ids
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .collect();
+        let mut collected_vals = Vec::<i32>::new();
+
+        let result = up_client.get_free_subscription_id().await;
+
+        assert!(result.is_ok());
+        collected_vals.push(result.unwrap());
+
+        let result = up_client.get_free_subscription_id().await;
+
+        assert!(result.is_ok());
+        collected_vals.push(result.unwrap());
+
+        assert!(collected_vals.len() == 2);
+        assert!(collected_vals.iter().all(|x| expected_vals.contains(x)));
+        assert!(up_client.free_subscription_ids.read().await.is_empty());
+
+        let result = up_client.get_free_subscription_id().await;
+
+        assert!(result.is_err());
+    }
+
+    #[async_std::test]
+    async fn test_add_free_subscription_id() {
+        let up_client = UPClientMqtt {
+            mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: Arc::new(RwLock::new(HashMap::new())),
+            topic_listener_map: Arc::new(RwLock::new(HashMap::new())),
+            authority_name: "test".to_string(),
+            client_type: UPClientMqttType::Device,
+            free_subscription_ids: Arc::new(RwLock::new((1..3).collect())),
+        };
+
+        let expected_id = 7;
+
+        up_client.add_free_subscription_id(expected_id).await;
+
+        let free_ids = up_client.free_subscription_ids.read().await;
+
+        assert!(free_ids.contains(&expected_id));
+    }
+
+    #[async_std::test]
     async fn test_add_listener() {
         let listener = Arc::new(SimpleListener {});
         let expected_listener = ComparableListener::new(listener.clone());
+        let sub_map = Arc::new(RwLock::new(HashMap::new()));
         let topic_map = Arc::new(RwLock::new(HashMap::new()));
 
         let up_client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: sub_map.clone(),
             topic_listener_map: topic_map.clone(),
             authority_name: "test".to_string(),
             client_type: UPClientMqttType::Device,
+            free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
         };
 
         assert!(topic_map.read().await.is_empty());
@@ -1054,6 +1240,7 @@ mod tests {
         let comparable_listener_1 = ComparableListener::new(listener_1.clone());
         let listener_2 = Arc::new(SimpleListener {});
         let comparable_listener_2 = ComparableListener::new(listener_2.clone());
+        let sub_map = Arc::new(RwLock::new(HashMap::new()));
         let topic_map = Arc::new(RwLock::new(HashMap::new()));
 
         topic_map.write().await.insert(
@@ -1066,9 +1253,11 @@ mod tests {
 
         let up_client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: sub_map.clone(),
             topic_listener_map: topic_map.clone(),
             authority_name: "test".to_string(),
             client_type: UPClientMqttType::Device,
+            free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
         };
 
         assert!(!topic_map.read().await.is_empty());
@@ -1163,9 +1352,11 @@ mod tests {
 
         let up_client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: Arc::new(RwLock::new(HashMap::new())),
             topic_listener_map: Arc::new(RwLock::new(HashMap::new())),
             authority_name: "VIN.vehicles".to_string(),
             client_type: UPClientMqttType::Device,
+            free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
         };
 
         let actual_segment = up_client.uri_to_mqtt_topic_segment(&uuri);
@@ -1195,9 +1386,11 @@ mod tests {
 
         let up_client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: Arc::new(RwLock::new(HashMap::new())),
             topic_listener_map: Arc::new(RwLock::new(HashMap::new())),
             authority_name: "VIN.vehicles".to_string(),
             client_type,
+            free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
         };
 
         let actual_topic = up_client.to_mqtt_topic_string(&src_uri, sink_uri.as_ref());

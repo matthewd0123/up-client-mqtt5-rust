@@ -119,8 +119,10 @@ mod tests {
             _client_id: UUID,
             _on_receive: fn(
                 Option<paho_mqtt::Message>,
+                Arc<RwLock<HashMap<i32, String>>>,
                 Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
             ),
+            _subscription_map: Arc<RwLock<HashMap<i32, String>>>,
             _topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
         ) -> Result<Self, UStatus>
         where
@@ -133,7 +135,7 @@ mod tests {
             Ok(())
         }
 
-        async fn subscribe(&self, _topic: &str) -> Result<(), UStatus> {
+        async fn subscribe(&self, _topic: &str, _id: i32) -> Result<(), UStatus> {
             Ok(())
         }
 
@@ -205,9 +207,11 @@ mod tests {
     ) {
         let client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: Arc::new(RwLock::new(HashMap::new())),
             topic_listener_map: Arc::new(RwLock::new(HashMap::new())),
             authority_name: "VIN.vehicles".to_string(),
             client_type: UPClientMqttType::Device,
+            free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
         };
 
         let message = create_test_message(message_type, source, sink, payload.to_string()).unwrap();
@@ -234,9 +238,11 @@ mod tests {
 
         let client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: Arc::new(RwLock::new(HashMap::new())),
             topic_listener_map,
             authority_name: "VIN.vehicles".to_string(),
             client_type: UPClientMqttType::Device,
+            free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
         };
 
         let listener = Arc::new(SimpleListener {});
@@ -285,9 +291,11 @@ mod tests {
 
         let client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: Arc::new(RwLock::new(HashMap::new())),
             topic_listener_map,
             authority_name: "VIN.vehicles".to_string(),
             client_type: UPClientMqttType::Device,
+            free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
         };
 
         let source_uri = UUri::from_str(source_filter).expect("Expected a valid source value");

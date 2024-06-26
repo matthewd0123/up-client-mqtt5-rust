@@ -22,6 +22,7 @@ async fn main() -> Result<(), UStatus> {
         mqtt_hostname: "localhost".to_string(),
         mqtt_port: "1883".to_string(),
         max_buffered_messages: 100,
+        max_subscriptions: 100,
         session_expiry_interval: 3600,
         ssl_options: None,
     };
