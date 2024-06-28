@@ -469,7 +469,11 @@ impl UPClientMqtt {
             let mut subscription_topic_map = self.subscription_topic_map.write().await;
             subscription_topic_map.insert(id, topic.to_string());
             // Subscribe to topic.
-            self.mqtt_client.subscribe(topic, id).await?;
+            if let Err(sub_err) = self.mqtt_client.subscribe(topic, id).await {
+                // If subscribe fails, add subscription id back to free subscription ids.
+                self.add_free_subscription_id(id).await;
+                return Err(sub_err);
+            };
         }
 
         let listeners = topic_listener_map
