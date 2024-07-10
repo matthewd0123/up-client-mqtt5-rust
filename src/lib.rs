@@ -18,13 +18,14 @@ use std::{
     sync::Arc,
 };
 
-use async_std::{stream::StreamExt, sync::RwLock};
+use async_channel::Receiver;
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::stream::StreamExt;
 use log::{info, warn};
 use paho_mqtt::{self as mqtt, AsyncReceiver, Message, MQTT_VERSION_5, QOS_1};
 use protobuf::MessageDyn;
-use tokio::task::JoinHandle;
+use tokio::{sync::RwLock, task::JoinHandle};
 use up_rust::{
     ComparableListener, UAttributes, UAttributesValidators, UCode, UMessage, UStatus, UUri, UUID,
 };
@@ -299,7 +300,7 @@ impl UPClientMqtt {
     fn create_cb_message_handler(
         subscription_map: Arc<RwLock<HashMap<i32, String>>>,
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-        mut message_stream: AsyncReceiver<Option<Message>>,
+        mut message_stream: Receiver<Option<Message>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             while let Some(msg_opt) = message_stream.next().await {
@@ -1142,7 +1143,7 @@ mod tests {
         properties
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn test_get_free_subscription_id() {
         let up_client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
@@ -1182,7 +1183,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn test_add_free_subscription_id() {
         let up_client = UPClientMqtt {
             mqtt_client: Arc::new(MockMqttClient {}),
@@ -1203,7 +1204,7 @@ mod tests {
         assert!(free_ids.contains(&expected_id));
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn test_add_listener() {
         let listener = Arc::new(SimpleListener {});
         let expected_listener = ComparableListener::new(listener.clone());
@@ -1234,7 +1235,7 @@ mod tests {
         assert!(actual_listeners.contains(&expected_listener));
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn test_remove_listener() {
         let listener_1 = Arc::new(SimpleListener {});
         let comparable_listener_1 = ComparableListener::new(listener_1.clone());
