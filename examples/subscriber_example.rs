@@ -60,7 +60,7 @@ async fn main() -> Result<(), UStatus> {
 
     let listener = Arc::new(PrintlnListener {});
     let source_filter = UUri::from_str(&format!(
-        "//Vehicle_B/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}" //"//Vehicle_B/A8000/2/8A50"
+        "//Vehicle_B/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"
     ))
     .expect("Failed to create source filter");
 
