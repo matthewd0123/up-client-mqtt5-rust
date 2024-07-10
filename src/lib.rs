@@ -18,13 +18,13 @@ use std::{
     sync::Arc,
 };
 
-use async_std::{sync::RwLock, task::block_on};
+use async_std::{stream::StreamExt, sync::RwLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use log::{info, warn};
-use mqtt::AsyncClient;
-use paho_mqtt::{self as mqtt, MQTT_VERSION_5, QOS_1};
+use paho_mqtt::{self as mqtt, AsyncReceiver, Message, MQTT_VERSION_5, QOS_1};
 use protobuf::MessageDyn;
+use tokio::task::JoinHandle;
 use up_rust::{
     ComparableListener, UAttributes, UAttributesValidators, UCode, UMessage, UStatus, UUri, UUID,
 };
@@ -49,14 +49,7 @@ pub trait MockableMqttClient: Sync + Send {
     async fn new_client(
         config: MqttConfig,
         client_id: UUID,
-        on_receive: fn(
-            Option<paho_mqtt::Message>,
-            Arc<RwLock<HashMap<i32, String>>>,
-            Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-        ),
-        subscription_map: Arc<RwLock<HashMap<i32, String>>>,
-        topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-    ) -> Result<Self, UStatus>
+    ) -> Result<(Self, AsyncReceiver<Option<Message>>), UStatus>
     where
         Self: Sized;
 
@@ -85,7 +78,7 @@ pub struct AsyncMqttClient {
 }
 
 // Create a set of poperties with a single Subscription ID
-pub fn sub_id(id: i32) -> mqtt::Properties {
+fn sub_id(id: i32) -> mqtt::Properties {
     mqtt::properties![
         mqtt::PropertyCode::SubscriptionIdentifier => id
     ]
@@ -101,14 +94,7 @@ impl MockableMqttClient for AsyncMqttClient {
     async fn new_client(
         config: MqttConfig,
         client_id: UUID,
-        on_receive: fn(
-            Option<paho_mqtt::Message>,
-            Arc<RwLock<HashMap<i32, String>>>,
-            Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-        ),
-        subscription_map: Arc<RwLock<HashMap<i32, String>>>,
-        topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-    ) -> Result<Self, UStatus>
+    ) -> Result<(Self, AsyncReceiver<Option<Message>>), UStatus>
     where
         Self: Sized,
     {
@@ -123,7 +109,7 @@ impl MockableMqttClient for AsyncMqttClient {
             mqtt_protocol, config.mqtt_hostname, config.mqtt_port
         );
 
-        let mqtt_cli = mqtt::CreateOptionsBuilder::new()
+        let mut mqtt_cli = mqtt::CreateOptionsBuilder::new()
             .server_uri(mqtt_uri)
             .client_id(client_id)
             .max_buffered_messages(config.max_buffered_messages)
@@ -135,11 +121,7 @@ impl MockableMqttClient for AsyncMqttClient {
                 )
             })?;
 
-        mqtt_cli.set_message_callback(
-            move |_cli: &AsyncClient, message: Option<paho_mqtt::Message>| {
-                on_receive(message, subscription_map.clone(), topic_map.clone())
-            },
-        );
+        let message_stream = mqtt_cli.get_stream(100);
 
         // TODO: Integrate ssl options when connecting, may need a username, etc.
         let conn_opts = mqtt::ConnectOptionsBuilder::with_mqtt_version(MQTT_VERSION_5)
@@ -154,9 +136,12 @@ impl MockableMqttClient for AsyncMqttClient {
             )
         })?;
 
-        Ok(Self {
-            inner_mqtt_client: Arc::new(mqtt_cli),
-        })
+        Ok((
+            Self {
+                inner_mqtt_client: Arc::new(mqtt_cli),
+            },
+            message_stream,
+        ))
     }
 
     /// Publish an mqtt message to the mqtt broker.
@@ -245,6 +230,8 @@ pub struct UPClientMqtt {
     client_type: UPClientMqttType,
     /// List of free subscription identifiers to use for the client subscriptions.
     free_subscription_ids: Arc<RwLock<HashSet<i32>>>,
+    /// Handle to the message callback.
+    cb_message_handle: Option<JoinHandle<()>>,
 }
 
 /// Type of UPClientMqtt.
@@ -275,14 +262,15 @@ impl UPClientMqtt {
         let subscription_topic_map_handle = subscription_topic_map.clone();
         let topic_listener_map_handle = topic_listener_map.clone();
 
-        let mqtt_client = AsyncMqttClient::new_client(
-            config,
-            client_id,
-            UPClientMqtt::on_receive,
+        // Create the mqtt client instance.
+        let (mqtt_client, message_stream) = AsyncMqttClient::new_client(config, client_id).await?;
+
+        // Create the callback message handler.
+        let cb_message_handle = Some(Self::create_cb_message_handler(
             subscription_topic_map_handle,
             topic_listener_map_handle,
-        )
-        .await?;
+            message_stream,
+        ));
 
         Ok(Self {
             mqtt_client: Arc::new(mqtt_client),
@@ -291,76 +279,89 @@ impl UPClientMqtt {
             authority_name,
             client_type,
             free_subscription_ids,
+            cb_message_handle,
         })
     }
 
-    /// Helper function that handles MQTT messages on reception.
-    ///
-    /// # Arguments
-    /// * `message` - MQTT message received.
-    /// * `subscription_map` - Map of subscription identifiers to subscribed topics.
-    /// * `topic_map` - Map of topics to listeners.
-    fn on_receive(
-        message: Option<paho_mqtt::Message>,
+    /// On exit, cleanup the callback message thread.
+    pub fn cleanup(&self) {
+        if let Some(cb_message_handle) = &self.cb_message_handle {
+            cb_message_handle.abort();
+        }
+    }
+
+    // Creates a callback message handler that listens for incoming messages and notifies listeners asyncronously.
+    //
+    // # Arguments
+    // * `subscription_map` - Map of subscription identifiers to subscribed topics.
+    // * `topic_map` - Map of topics to listeners.
+    // * `message_stream` - Stream of incoming mqtt messages.
+    fn create_cb_message_handler(
         subscription_map: Arc<RwLock<HashMap<i32, String>>>,
         topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-    ) {
-        if let Some(msg) = message {
-            let topic = msg.topic();
-            let sub_id = msg
-                .properties()
-                .get_int(mqtt::PropertyCode::SubscriptionIdentifier);
+        mut message_stream: AsyncReceiver<Option<Message>>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(msg_opt) = message_stream.next().await {
+                if let Some(msg) = msg_opt {
+                    let topic = msg.topic();
+                    let sub_id = msg
+                        .properties()
+                        .get_int(mqtt::PropertyCode::SubscriptionIdentifier);
 
-            // Get attributes from mqtt header.
-            let uattributes_res =
-                UPClientMqtt::get_uattributes_from_mqtt_properties(msg.properties());
+                    // Get attributes from mqtt header.
+                    let uattributes_res =
+                        UPClientMqtt::get_uattributes_from_mqtt_properties(msg.properties());
 
-            if uattributes_res.is_err() {
-                warn!(
-                    "Unable to get UAttributes from mqtt properties: {}",
-                    uattributes_res.err().unwrap()
-                );
-                return;
-            }
+                    if uattributes_res.is_err() {
+                        warn!(
+                            "Unable to get UAttributes from mqtt properties: {}",
+                            uattributes_res.err().unwrap()
+                        );
+                        return;
+                    }
 
-            let uattributes = uattributes_res.unwrap();
+                    let uattributes = uattributes_res.unwrap();
 
-            let payload = msg.payload();
-            let upayload = payload.to_vec();
+                    let payload = msg.payload();
+                    let upayload = payload.to_vec();
 
-            // Create UMessage from UAttributes and UPayload.
-            let umessage = UMessage {
-                attributes: Some(uattributes).into(),
-                payload: Some(upayload.into()),
-                ..Default::default()
-            };
-
-            let topic_map_read = block_on(topic_map.read());
-            let subscription_map_read = block_on(subscription_map.read());
-
-            // If subscription ID is present, only notify listeners for that subscription.
-            if let Some(sub_id) = sub_id {
-                if let Some(sub_topic) = subscription_map_read.get(&sub_id) {
-                    if let Some(listeners) = topic_map_read.get(sub_topic) {
-                        listeners.iter().for_each(|listener| {
-                            let umsg_clone = umessage.clone(); // need to clone outside of closure.
-                            block_on(listener.on_receive(umsg_clone));
-                        });
+                    // Create UMessage from UAttributes and UPayload.
+                    let umessage = UMessage {
+                        attributes: Some(uattributes).into(),
+                        payload: Some(upayload.into()),
+                        ..Default::default()
                     };
+
+                    let topic_map_read = topic_map.read().await;
+                    let subscription_map_read = subscription_map.read().await;
+
+                    // If subscription ID is present, only notify listeners for that subscription.
+                    if let Some(sub_id) = sub_id {
+                        if let Some(sub_topic) = subscription_map_read.get(&sub_id) {
+                            if let Some(listeners) = topic_map_read.get(sub_topic) {
+                                let listeners_iter = listeners.iter();
+                                for listener in listeners_iter {
+                                    listener.on_receive(umessage.clone()).await;
+                                }
+                            };
+                        }
+                    } else {
+                        // Filter the topic map for topics that match the received topic, including wildcards.
+                        let topics_iter = topic_map_read
+                            .iter()
+                            .filter(|(key, _)| UPClientMqtt::compare_topic(topic, key));
+
+                        for (_topic, listeners) in topics_iter {
+                            let listeners_iter = listeners.iter();
+                            for listener in listeners_iter {
+                                listener.on_receive(umessage.clone()).await;
+                            }
+                        }
+                    }
                 }
-            } else {
-                // Filter the topic map for topics that match the received topic, including wildcards.
-                topic_map_read
-                    .iter()
-                    .filter(|(key, _)| UPClientMqtt::compare_topic(topic, key))
-                    .for_each(|(_topic, listeners)| {
-                        listeners.iter().for_each(|listener| {
-                            let umsg_clone = umessage.clone(); // need to clone outside of closure.
-                            block_on(listener.on_receive(umsg_clone));
-                        });
-                    });
             }
-        }
+        })
     }
 
     /// Compare a topic to a topic pattern. Supports single level wildcards.
@@ -882,18 +883,12 @@ mod tests {
         async fn new_client(
             _config: MqttConfig,
             _client_id: UUID,
-            _on_receive: fn(
-                Option<paho_mqtt::Message>,
-                Arc<RwLock<HashMap<i32, String>>>,
-                Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-            ),
-            _subscription_map: Arc<RwLock<HashMap<i32, String>>>,
-            _topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-        ) -> Result<Self, UStatus>
+        ) -> Result<(Self, AsyncReceiver<Option<Message>>), UStatus>
         where
             Self: Sized,
         {
-            Ok(Self {})
+            let (_tx, rx) = async_channel::bounded(1);
+            Ok((Self {}, rx))
         }
 
         async fn publish(&self, _mqtt_message: mqtt::Message) -> Result<(), UStatus> {
@@ -1156,6 +1151,7 @@ mod tests {
             authority_name: "test".to_string(),
             client_type: UPClientMqttType::Device,
             free_subscription_ids: Arc::new(RwLock::new((1..3).collect())),
+            cb_message_handle: None,
         };
 
         let expected_vals: Vec<i32> = up_client
@@ -1195,6 +1191,7 @@ mod tests {
             authority_name: "test".to_string(),
             client_type: UPClientMqttType::Device,
             free_subscription_ids: Arc::new(RwLock::new((1..3).collect())),
+            cb_message_handle: None,
         };
 
         let expected_id = 7;
@@ -1220,6 +1217,7 @@ mod tests {
             authority_name: "test".to_string(),
             client_type: UPClientMqttType::Device,
             free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
+            cb_message_handle: None,
         };
 
         assert!(topic_map.read().await.is_empty());
@@ -1260,6 +1258,7 @@ mod tests {
             authority_name: "test".to_string(),
             client_type: UPClientMqttType::Device,
             free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
+            cb_message_handle: None,
         };
 
         assert!(!topic_map.read().await.is_empty());
@@ -1355,6 +1354,7 @@ mod tests {
             authority_name: "VIN.vehicles".to_string(),
             client_type: UPClientMqttType::Device,
             free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
+            cb_message_handle: None,
         };
 
         let actual_segment = up_client.uri_to_mqtt_topic_segment(&uuri);
@@ -1389,10 +1389,35 @@ mod tests {
             authority_name: "VIN.vehicles".to_string(),
             client_type,
             free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
+            cb_message_handle: None,
         };
 
         let actual_topic = up_client.to_mqtt_topic_string(&src_uri, sink_uri.as_ref());
 
         assert_eq!(actual_topic, expected_topic);
+    }
+
+    #[test_case("d/VIN.vehicles/A8000/2/8A50", "d/VIN.vehicles/A8000/2/8A50", true; "Exact match")]
+    #[test_case("d/VIN.vehicles/A8000/2/8A50", "d/+/+/+/+", true; "Wildcard pattern")]
+    #[test_case("d/VIN.vehicles/A8000/2/8A50", "d/VIN.vehicles/B8000/2/8A50", false; "Mismatched entity id")]
+    #[test_case("d/VIN.vehicles/A8000/2/8A50", "d/+/A8000/2/8A50", true; "Single wildcard matchs")]
+    fn test_compare_topic(topic: &str, pattern: &str, expected_result: bool) {
+        assert_eq!(UPClientMqtt::compare_topic(topic, pattern), expected_result);
+    }
+
+    #[test_case(UPClientMqttType::Device, "d"; "Device indicator")]
+    #[test_case(UPClientMqttType::Cloud, "c"; "Client indicator")]
+    fn test_get_client_identifier(client_type: UPClientMqttType, expected_str: &str) {
+        let client = UPClientMqtt {
+            mqtt_client: Arc::new(MockMqttClient {}),
+            subscription_topic_map: Arc::new(RwLock::new(HashMap::new())),
+            topic_listener_map: Arc::new(RwLock::new(HashMap::new())),
+            authority_name: "test".to_string(),
+            client_type,
+            free_subscription_ids: Arc::new(RwLock::new((1..3).collect())),
+            cb_message_handle: None,
+        };
+
+        assert_eq!(client.get_client_indicator(), expected_str);
     }
 }

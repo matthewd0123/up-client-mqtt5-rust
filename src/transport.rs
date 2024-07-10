@@ -78,13 +78,10 @@ impl UTransport for UPClientMqtt {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{HashMap, HashSet},
-        str::FromStr,
-    };
+    use std::{collections::HashMap, str::FromStr};
 
     use async_std::sync::RwLock;
-    use paho_mqtt::{self as mqtt};
+    use paho_mqtt::{self as mqtt, AsyncReceiver, Message};
     use up_rust::{
         ComparableListener, UListener, UMessageBuilder, UMessageType, UPayloadFormat, UUID,
     };
@@ -117,18 +114,12 @@ mod tests {
         async fn new_client(
             _config: MqttConfig,
             _client_id: UUID,
-            _on_receive: fn(
-                Option<paho_mqtt::Message>,
-                Arc<RwLock<HashMap<i32, String>>>,
-                Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-            ),
-            _subscription_map: Arc<RwLock<HashMap<i32, String>>>,
-            _topic_map: Arc<RwLock<HashMap<String, HashSet<ComparableListener>>>>,
-        ) -> Result<Self, UStatus>
+        ) -> Result<(Self, AsyncReceiver<Option<Message>>), UStatus>
         where
             Self: Sized,
         {
-            Ok(Self {})
+            let (_tx, rx) = async_channel::bounded(1);
+            Ok((Self {}, rx))
         }
 
         async fn publish(&self, _mqtt_message: mqtt::Message) -> Result<(), UStatus> {
@@ -212,6 +203,7 @@ mod tests {
             authority_name: "VIN.vehicles".to_string(),
             client_type: UPClientMqttType::Device,
             free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
+            cb_message_handle: None,
         };
 
         let message = create_test_message(message_type, source, sink, payload.to_string()).unwrap();
@@ -243,6 +235,7 @@ mod tests {
             authority_name: "VIN.vehicles".to_string(),
             client_type: UPClientMqttType::Device,
             free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
+            cb_message_handle: None,
         };
 
         let listener = Arc::new(SimpleListener {});
@@ -296,6 +289,7 @@ mod tests {
             authority_name: "VIN.vehicles".to_string(),
             client_type: UPClientMqttType::Device,
             free_subscription_ids: Arc::new(RwLock::new((1..10).collect())),
+            cb_message_handle: None,
         };
 
         let source_uri = UUri::from_str(source_filter).expect("Expected a valid source value");
