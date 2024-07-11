@@ -1346,11 +1346,69 @@ mod tests {
         assert!(result.err().unwrap().code == UCode::NOT_FOUND.into());
     }
 
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/8A50"), None, None, None, None, None, None, None, None, None), 3, None; "Publish success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION), Some("//VIN.vehicles/A8000/2/1A50"), Some("//VIN.vehicles/B8000/3/0"), None, None, None, None, None, None, None, None), 4, None; "Notification success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_REQUEST), Some("//VIN.vehicles/A8000/2/0"), Some("//VIN.vehicles/B8000/3/1B50"), Some(UPriority::UPRIORITY_CS4), Some(3600), None, None, None, None, None, None), 6, None; "Request success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_RESPONSE), Some("//VIN.vehicles/B8000/3/1B50"), Some("//VIN.vehicles/A8000/2/0"), Some(UPriority::UPRIORITY_CS4), None, None, None, Some(UUID::build()), None, None, None), 6, None; "Response success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/1A50"), None, None, None, None, None, None, None, None, None), 3, Some(UStatus::fail_with_code(UCode::INTERNAL, "Invalid uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string())); "Publish failure with validation error")]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_PUBLISH),
+            Some("//VIN.vehicles/A8000/2/8A50"),
+            None, None, None, None, None, None, None, None, None
+        ),
+        3,
+        None;
+        "Publish success"
+    )]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION),
+            Some("//VIN.vehicles/A8000/2/1A50"),
+            Some("//VIN.vehicles/B8000/3/0"),
+            None, None, None, None, None, None, None, None
+        ),
+        4,
+        None;
+        "Notification success"
+    )]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_REQUEST),
+            Some("//VIN.vehicles/A8000/2/0"),
+            Some("//VIN.vehicles/B8000/3/1B50"),
+            Some(UPriority::UPRIORITY_CS4),
+            Some(3600),
+            None, None, None, None, None, None
+        ),
+        6,
+        None;
+        "Request success"
+    )]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_RESPONSE),
+            Some("//VIN.vehicles/B8000/3/1B50"),
+            Some("//VIN.vehicles/A8000/2/0"),
+            Some(UPriority::UPRIORITY_CS4),
+            None, None, None,
+            Some(UUID::build()),
+            None, None, None
+        ),
+        6,
+        None;
+        "Response success"
+    )]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_PUBLISH),
+            Some("//VIN.vehicles/A8000/2/1A50"),
+            None, None, None, None, None, None, None, None, None
+        ),
+        3,
+        Some(UStatus::fail_with_code(UCode::INTERNAL, "Invalid uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string()));
+        "Publish failure with validation error"
+    )]
     fn test_create_mqtt_properties_from_uattributes(
         (attributes, properties): (UAttributes, mqtt::Properties),
         expected_attributes_num: usize,
@@ -1370,11 +1428,64 @@ mod tests {
         }
     }
 
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/8A50"), None, None, None, None, None, None, None, None, None), None; "Publish success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION), Some("//VIN.vehicles/A8000/2/1A50"), Some("//VIN.vehicles/B8000/3/0"), None, None, None, None, None, None, None, None), None; "Notification success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_REQUEST), Some("//VIN.vehicles/A8000/2/0"), Some("//VIN.vehicles/B8000/3/1B50"), Some(UPriority::UPRIORITY_CS4), Some(3600), None, None, None, None, None, None), None; "Request success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_RESPONSE), Some("//VIN.vehicles/B8000/3/1B50"), Some("//VIN.vehicles/A8000/2/0"), Some(UPriority::UPRIORITY_CS4), None, None, None, Some(UUID::build()), None, None, None), None; "Response success")]
-    #[test_case(create_test_uattributes_and_properties(Some(UUID::build()), Some(UMessageType::UMESSAGE_TYPE_PUBLISH), Some("//VIN.vehicles/A8000/2/1A50"), None, None, None, None, None, None, None, None, None), Some(UStatus::fail_with_code(UCode::INTERNAL, "Unable to construct uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string())); "Publish failure with validation error")]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_PUBLISH),
+            Some("//VIN.vehicles/A8000/2/8A50"),
+            None, None, None, None, None, None, None, None, None
+        ),
+        None;
+        "Publish success"
+    )]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION),
+            Some("//VIN.vehicles/A8000/2/1A50"),
+            Some("//VIN.vehicles/B8000/3/0"),
+            None, None, None, None, None, None, None, None
+        ),
+        None;
+        "Notification success"
+    )]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_REQUEST),
+            Some("//VIN.vehicles/A8000/2/0"),
+            Some("//VIN.vehicles/B8000/3/1B50"),
+            Some(UPriority::UPRIORITY_CS4),
+            Some(3600),
+            None, None, None, None, None, None
+        ),
+        None;
+        "Request success"
+    )]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_RESPONSE),
+            Some("//VIN.vehicles/B8000/3/1B50"),
+            Some("//VIN.vehicles/A8000/2/0"),
+            Some(UPriority::UPRIORITY_CS4),
+            None, None, None,
+            Some(UUID::build()),
+            None, None, None
+        ),
+        None;
+        "Response success"
+    )]
+    #[test_case(
+        create_test_uattributes_and_properties(
+            Some(UUID::build()),
+            Some(UMessageType::UMESSAGE_TYPE_PUBLISH),
+            Some("//VIN.vehicles/A8000/2/1A50"),
+            None, None, None, None, None, None, None, None, None
+        ),
+        Some(UStatus::fail_with_code(UCode::INTERNAL, "Unable to construct uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string()));
+        "Publish failure with validation error"
+    )]
     fn test_get_uattributes_from_mqtt_properties(
         (attributes, properties): (UAttributes, mqtt::Properties),
         expected_error: Option<UStatus>,
@@ -1389,13 +1500,36 @@ mod tests {
         }
     }
 
-    #[test_case("//VIN.vehicles/A8000/2/8A50", "VIN.vehicles/A8000/2/8A50"; "Valid uuri")]
-    #[test_case("A8000/2/8A50", "VIN.vehicles/A8000/2/8A50"; "Local uuri")]
-    #[test_case(&format!("//{WILDCARD_AUTHORITY}/A8000/2/8A50"), "+/A8000/2/8A50"; "Wildcard authority")]
-    #[test_case(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/2/8A50"), "VIN.vehicles/+/2/8A50"; "Wildcard entity id")]
-    #[test_case(&format!("//VIN.vehicles/A8000/{WILDCARD_ENTITY_VERSION:X}/8A50"), "VIN.vehicles/A8000/+/8A50"; "Wildcard entity version")]
-    #[test_case(&format!("//VIN.vehicles/A8000/2/{WILDCARD_RESOURCE_ID:X}"), "VIN.vehicles/A8000/2/+"; "Wildcard resource id")]
-
+    #[test_case(
+        "//VIN.vehicles/A8000/2/8A50",
+        "VIN.vehicles/A8000/2/8A50";
+        "Valid uuri"
+    )]
+    #[test_case(
+        "A8000/2/8A50",
+        "VIN.vehicles/A8000/2/8A50";
+        "Local uuri"
+    )]
+    #[test_case(
+        &format!("//{WILDCARD_AUTHORITY}/A8000/2/8A50"),
+        "+/A8000/2/8A50";
+        "Wildcard authority"
+    )]
+    #[test_case(
+        &format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/2/8A50"),
+        "VIN.vehicles/+/2/8A50";
+        "Wildcard entity id"
+    )]
+    #[test_case(
+        &format!("//VIN.vehicles/A8000/{WILDCARD_ENTITY_VERSION:X}/8A50"),
+        "VIN.vehicles/A8000/+/8A50";
+        "Wildcard entity version"
+    )]
+    #[test_case(
+        &format!("//VIN.vehicles/A8000/2/{WILDCARD_RESOURCE_ID:X}"),
+        "VIN.vehicles/A8000/2/+";
+        "Wildcard resource id"
+    )]
     fn test_uri_to_mqtt_topic_segment(uuri: &str, expected_segment: &str) {
         let uuri = UUri::from_str(uuri).expect("expected valid UUri string.");
 
@@ -1414,16 +1548,76 @@ mod tests {
         assert_eq!(&actual_segment, expected_segment);
     }
 
-    #[test_case("//VIN.vehicles/A8000/2/8A50", None, UPClientMqttType::Device, "d/VIN.vehicles/A8000/2/8A50"; "Subscribe to a specific publish topic")]
-    #[test_case("//VIN.vehicles/A8000/2/8A50", Some("//VIN.vehicles/B8000/3/0"), UPClientMqttType::Device, "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0"; "Subscribe to a specific notification topic")]
-    #[test_case("//VIN.vehicles/A8000/2/0", Some("//VIN.vehicles/B8000/3/1B50"), UPClientMqttType::Device, "d/VIN.vehicles/A8000/2/0/VIN.vehicles/B8000/3/1B50"; "Request from device")]
-    #[test_case("//VIN.vehicles/B8000/3/1B50", Some("//VIN.vehicles/A8000/2/0"), UPClientMqttType::Device, "d/VIN.vehicles/B8000/3/1B50/VIN.vehicles/A8000/2/0"; "Response from device")]
-    #[test_case(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), Some("//VIN.vehicles/AB34/1/12CD"), UPClientMqttType::Device, "d/+/+/+/+/VIN.vehicles/AB34/1/12CD"; "Subscribe to incoming requests for a specific method")]
-    #[test_case(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), Some(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}")), UPClientMqttType::Cloud, "c/+/+/+/+/VIN.vehicles/+/+/+"; "Subscribe to all incoming messages to a UAuthority in the cloud")]
-    #[test_case(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), None, UPClientMqttType::Device, "d/VIN.vehicles/+/+/+"; "Subscribe to all publish messages from a different UAuthority")]
-    #[test_case(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), Some(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/0")), UPClientMqttType::Cloud, "c/+/+/+/+/VIN.vehicles/+/+/0"; "Streamer subscribe to all notifications, requests and responses to its device from the cloud")]
-    #[test_case(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), None, UPClientMqttType::Device, "d/+/+/+/+"; "Subscribe to all publish messages from devices")]
-    #[test_case(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"), Some(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}")), UPClientMqttType::Device, "d/VIN.vehicles/+/+/+/+/+/+/+"; "Subscribe to all message types but publish messages sent from a UAuthority")]
+    #[test_case(
+        "//VIN.vehicles/A8000/2/8A50",
+        None,
+        UPClientMqttType::Device,
+        "d/VIN.vehicles/A8000/2/8A50";
+        "Subscribe to a specific publish topic"
+    )]
+    #[test_case(
+        "//VIN.vehicles/A8000/2/8A50",
+        Some("//VIN.vehicles/B8000/3/0"),
+        UPClientMqttType::Device,
+        "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0";
+        "Subscribe to a specific notification topic"
+    )]
+    #[test_case(
+        "//VIN.vehicles/A8000/2/0",
+        Some("//VIN.vehicles/B8000/3/1B50"),
+        UPClientMqttType::Device,
+        "d/VIN.vehicles/A8000/2/0/VIN.vehicles/B8000/3/1B50";
+        "Request from device"
+    )]
+    #[test_case(
+        "//VIN.vehicles/B8000/3/1B50",
+        Some("//VIN.vehicles/A8000/2/0"),
+        UPClientMqttType::Device,
+        "d/VIN.vehicles/B8000/3/1B50/VIN.vehicles/A8000/2/0";
+        "Response from device"
+    )]
+    #[test_case(
+        &format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"),
+        Some("//VIN.vehicles/AB34/1/12CD"),
+        UPClientMqttType::Device,
+        "d/+/+/+/+/VIN.vehicles/AB34/1/12CD";
+        "Subscribe to incoming requests for a specific method"
+    )]
+    #[test_case(
+        &format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"),
+        Some(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}")),
+        UPClientMqttType::Cloud,
+        "c/+/+/+/+/VIN.vehicles/+/+/+";
+        "Subscribe to all incoming messages to a UAuthority in the cloud"
+    )]
+    #[test_case(
+        &format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"),
+        None,
+        UPClientMqttType::Device,
+        "d/VIN.vehicles/+/+/+";
+        "Subscribe to all publish messages from a different UAuthority"
+    )]
+    #[test_case(
+        &format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"),
+        Some(&format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/0")),
+        UPClientMqttType::Cloud,
+        "c/+/+/+/+/VIN.vehicles/+/+/0";
+        "Streamer subscribe to all notifications, requests and responses to its device from the cloud"
+    )]
+    #[test_case(
+        &format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"),
+        None,
+        UPClientMqttType::Device,
+        "d/+/+/+/+";
+        "Subscribe to all publish messages from devices"
+    )]
+    #[test_case(
+        &format!("//VIN.vehicles/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"),
+        Some(&format!("//{WILDCARD_AUTHORITY}/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}")),
+        UPClientMqttType::Device,
+        "d/VIN.vehicles/+/+/+/+/+/+/+";
+        "Subscribe to all message types but publish messages sent from a UAuthority"
+    )]
     fn test_to_mqtt_topic_string(
         src_uri: &str,
         sink_uri: Option<&str>,

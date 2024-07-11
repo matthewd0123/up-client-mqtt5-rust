@@ -184,10 +184,38 @@ mod tests {
         }
     }
 
-    #[test_case(UMessageType::UMESSAGE_TYPE_PUBLISH, "//VIN.vehicles/A8000/2/8A50", None, "payload", None; "Publish success")]
-    #[test_case(UMessageType::UMESSAGE_TYPE_NOTIFICATION, "//VIN.vehicles/A8000/2/1A50", Some("//VIN.vehicles/B8000/3/0"), "payload", None; "Notification success")]
-    #[test_case(UMessageType::UMESSAGE_TYPE_REQUEST, "//VIN.vehicles/A8000/2/1B50", Some("//VIN.vehicles/B8000/3/0"), "payload", None; "Request success")]
-    #[test_case(UMessageType::UMESSAGE_TYPE_RESPONSE, "//VIN.vehicles/B8000/3/0", Some("//VIN.vehicles/A8000/2/1B50"), "payload", None; "Response success")]
+    #[test_case(
+        UMessageType::UMESSAGE_TYPE_PUBLISH,
+        "//VIN.vehicles/A8000/2/8A50",
+        None,
+        "payload",
+        None;
+        "Publish success"
+    )]
+    #[test_case(
+        UMessageType::UMESSAGE_TYPE_NOTIFICATION,
+        "//VIN.vehicles/A8000/2/1A50",
+        Some("//VIN.vehicles/B8000/3/0"),
+        "payload",
+        None;
+        "Notification success"
+    )]
+    #[test_case(
+        UMessageType::UMESSAGE_TYPE_REQUEST,
+        "//VIN.vehicles/A8000/2/1B50",
+        Some("//VIN.vehicles/B8000/3/0"),
+        "payload",
+        None;
+        "Request success"
+    )]
+    #[test_case(
+        UMessageType::UMESSAGE_TYPE_RESPONSE,
+        "//VIN.vehicles/B8000/3/0",
+        Some("//VIN.vehicles/A8000/2/1B50"),
+        "payload",
+        None;
+        "Response success"
+    )]
     #[tokio::test]
     async fn test_send(
         message_type: UMessageType,
@@ -217,8 +245,20 @@ mod tests {
         }
     }
 
-    #[test_case("//VIN.vehicles/A8000/2/8A50", None, "d/VIN.vehicles/A8000/2/8A50", None; "Register listener success")]
-    #[test_case("//VIN.vehicles/A8000/2/8A50", Some("//VIN.vehicles/B8000/3/0"), "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0", None; "Register listener with sink success")]
+    #[test_case(
+        "//VIN.vehicles/A8000/2/8A50",
+        None,
+        "d/VIN.vehicles/A8000/2/8A50",
+        None;
+        "Register listener success"
+    )]
+    #[test_case(
+        "//VIN.vehicles/A8000/2/8A50",
+        Some("//VIN.vehicles/B8000/3/0"),
+        "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0",
+        None;
+        "Register listener with sink success"
+    )]
     #[tokio::test]
     async fn test_register_listener(
         source_filter: &str,
@@ -263,8 +303,20 @@ mod tests {
         assert!(listeners.contains(&ComparableListener::new(listener)));
     }
 
-    #[test_case("//VIN.vehicles/A8000/2/8A50", None, "d/VIN.vehicles/A8000/2/8A50", None; "Unregister listener success")]
-    #[test_case("//VIN.vehicles/A8000/2/8A50", Some("//VIN.vehicles/B8000/3/0"), "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0", None; "Unregister listener with sink success")]
+    #[test_case(
+        "//VIN.vehicles/A8000/2/8A50",
+        None,
+        "d/VIN.vehicles/A8000/2/8A50",
+        None;
+        "Unregister listener success"
+    )]
+    #[test_case(
+        "//VIN.vehicles/A8000/2/8A50",
+        Some("//VIN.vehicles/B8000/3/0"),
+        "d/VIN.vehicles/A8000/2/8A50/VIN.vehicles/B8000/3/0",
+        None;
+        "Unregister listener with sink success"
+    )]
     #[tokio::test]
     async fn test_unregister_listener(
         source_filter: &str,
