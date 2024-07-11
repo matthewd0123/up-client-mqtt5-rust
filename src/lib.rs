@@ -22,7 +22,7 @@ use async_channel::Receiver;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::StreamExt;
-use log::{info, warn};
+use log::{info, trace, warn};
 use paho_mqtt::{self as mqtt, AsyncReceiver, Message, MQTT_VERSION_5, QOS_1};
 use protobuf::MessageDyn;
 use tokio::{sync::RwLock, task::JoinHandle};
@@ -39,10 +39,14 @@ const WILDCARD_ENTITY_ID: u32 = 0x0000_FFFF;
 const WILDCARD_ENTITY_VERSION: u32 = 0x0000_00FF;
 const WILDCARD_RESOURCE_ID: u32 = 0x0000_FFFF;
 
+// Attribute field names
+const UURI_NAME: &str = "uuri";
+const UUID_NAME: &str = "uuid";
+
 /// Trait that allows for a mockable mqtt client.
 #[async_trait]
 pub trait MockableMqttClient: Sync + Send {
-    /// Create a new UPClientMqtt.
+    /// Create a new MockableMqttClient.
     ///
     /// # Arguments
     /// * `config` - Configuration for the mqtt client.
@@ -87,7 +91,7 @@ fn sub_id(id: i32) -> mqtt::Properties {
 
 #[async_trait]
 impl MockableMqttClient for AsyncMqttClient {
-    /// Create a new UPClientMqtt.
+    /// Create a new MockableMqttClient.
     ///
     /// # Arguments
     /// * `config` - Configuration for the mqtt client.
@@ -304,60 +308,66 @@ impl UPClientMqtt {
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             while let Some(msg_opt) = message_stream.next().await {
-                if let Some(msg) = msg_opt {
-                    let topic = msg.topic();
-                    let sub_id = msg
-                        .properties()
-                        .get_int(mqtt::PropertyCode::SubscriptionIdentifier);
+                let Some(msg) = msg_opt else {
+                    trace!("Received empty message from stream.");
+                    continue;
+                };
+                let topic = msg.topic();
+                let sub_id = msg
+                    .properties()
+                    .get_int(mqtt::PropertyCode::SubscriptionIdentifier);
 
-                    // Get attributes from mqtt header.
-                    let uattributes_res =
-                        UPClientMqtt::get_uattributes_from_mqtt_properties(msg.properties());
-
-                    if uattributes_res.is_err() {
-                        warn!(
-                            "Unable to get UAttributes from mqtt properties: {}",
-                            uattributes_res.err().unwrap()
-                        );
-                        return;
+                // Get attributes from mqtt header.
+                let uattributes = {
+                    match UPClientMqtt::get_uattributes_from_mqtt_properties(msg.properties()) {
+                        Ok(uattributes) => uattributes,
+                        Err(e) => {
+                            warn!("Unable to get UAttributes from mqtt properties: {}", e);
+                            continue;
+                        }
                     }
+                };
 
-                    let uattributes = uattributes_res.unwrap();
+                let payload = msg.payload();
+                let upayload = payload.to_vec();
 
-                    let payload = msg.payload();
-                    let upayload = payload.to_vec();
+                // Create UMessage from UAttributes and UPayload.
+                let umessage = UMessage {
+                    attributes: Some(uattributes).into(),
+                    payload: Some(upayload.into()),
+                    ..Default::default()
+                };
 
-                    // Create UMessage from UAttributes and UPayload.
-                    let umessage = UMessage {
-                        attributes: Some(uattributes).into(),
-                        payload: Some(upayload.into()),
-                        ..Default::default()
+                let topic_map_read = topic_map.read().await;
+                let subscription_map_read = subscription_map.read().await;
+
+                // If subscription ID is present, only notify listeners for that subscription.
+                if let Some(sub_id) = sub_id {
+                    let Some(sub_topic) = subscription_map_read.get(&sub_id) else {
+                        trace!(
+                            "Received message with subscription id that is not registered: {}",
+                            sub_id
+                        );
+                        continue;
                     };
 
-                    let topic_map_read = topic_map.read().await;
-                    let subscription_map_read = subscription_map.read().await;
+                    let Some(listeners) = topic_map_read.get(sub_topic) else {
+                        trace!("No listeners registered for topic: {}", sub_topic);
+                        continue;
+                    };
 
-                    // If subscription ID is present, only notify listeners for that subscription.
-                    if let Some(sub_id) = sub_id {
-                        if let Some(sub_topic) = subscription_map_read.get(&sub_id) {
-                            if let Some(listeners) = topic_map_read.get(sub_topic) {
-                                let listeners_iter = listeners.iter();
-                                for listener in listeners_iter {
-                                    listener.on_receive(umessage.clone()).await;
-                                }
-                            };
-                        }
-                    } else {
-                        // Filter the topic map for topics that match the received topic, including wildcards.
-                        let topics_iter = topic_map_read
-                            .iter()
-                            .filter(|(key, _)| UPClientMqtt::compare_topic(topic, key));
+                    for listener in listeners.iter() {
+                        listener.on_receive(umessage.clone()).await;
+                    }
+                } else {
+                    // Filter the topic map for topics that match the received topic, including wildcards.
+                    let topics_iter = topic_map_read
+                        .iter()
+                        .filter(|(key, _)| UPClientMqtt::compare_topic(topic, key));
 
-                        for (_topic, listeners) in topics_iter {
-                            let listeners_iter = listeners.iter();
-                            for listener in listeners_iter {
-                                listener.on_receive(umessage.clone()).await;
-                            }
+                    for (_topic, listeners) in topics_iter {
+                        for listener in listeners.iter() {
+                            listener.on_receive(umessage.clone()).await;
                         }
                     }
                 }
@@ -502,43 +512,43 @@ impl UPClientMqtt {
         let mut topic_listener_map = self.topic_listener_map.write().await;
         let mut subscription_topic_map = self.subscription_topic_map.write().await;
 
-        if topic_listener_map.contains_key(topic) {
-            topic_listener_map
-                .entry(topic.to_string())
-                .and_modify(|listeners| {
-                    // Remove listener from hash set.
-                    let comp_listener = ComparableListener::new(listener);
-                    listeners.remove(&comp_listener);
-                });
-
-            // Remove topic if no listeners are left.
-            if topic_listener_map.get(topic).unwrap().is_empty() {
-                let sub_id = subscription_topic_map.iter_mut().find_map(|(k, v)| {
-                    if v == topic {
-                        Some(*k)
-                    } else {
-                        None
-                    }
-                });
-
-                if let Some(sub_id) = sub_id {
-                    // Remove subscription id from map.
-                    subscription_topic_map.remove(&sub_id);
-
-                    // Add subscription id back to free subscription ids.
-                    self.add_free_subscription_id(sub_id).await;
-                }
-
-                topic_listener_map.remove(topic);
-
-                // Unsubscribe from topic.
-                self.mqtt_client.unsubscribe(topic).await?;
-            }
-        } else {
+        if !topic_listener_map.contains_key(topic) {
             return Err(UStatus::fail_with_code(
                 UCode::NOT_FOUND,
                 format!("Topic '{topic}' is not registered."),
             ));
+        }
+
+        topic_listener_map
+            .entry(topic.to_string())
+            .and_modify(|listeners| {
+                // Remove listener from hash set.
+                let comp_listener = ComparableListener::new(listener);
+                listeners.remove(&comp_listener);
+            });
+
+        // Remove topic if no listeners are left.
+        if topic_listener_map.get(topic).unwrap().is_empty() {
+            let sub_id = subscription_topic_map.iter_mut().find_map(|(k, v)| {
+                if v == topic {
+                    Some(*k)
+                } else {
+                    None
+                }
+            });
+
+            if let Some(sub_id) = sub_id {
+                // Remove subscription id from map.
+                subscription_topic_map.remove(&sub_id);
+
+                // Add subscription id back to free subscription ids.
+                self.add_free_subscription_id(sub_id).await;
+            }
+
+            topic_listener_map.remove(topic);
+
+            // Unsubscribe from topic.
+            self.mqtt_client.unsubscribe(topic).await?;
         }
 
         Ok(())
@@ -565,122 +575,155 @@ impl UPClientMqtt {
             // Get protobuf field number as string.
             let field_proto_number = field.number().to_string();
 
-            // If field is a either an enum or message type, process the field.
-            if field.is_singular() {
-                let field_val_wrapped_opt = field.get_singular(attributes);
-
-                if let Some(field_val_wrapped) = field_val_wrapped_opt {
-                    match field_val_wrapped.get_type() {
-                        protobuf::reflect::RuntimeType::U32 => {
-                            if let Some(u32_val) = field_val_wrapped.to_u32() {
-                                properties
-                                    .push_string_pair(
-                                        mqtt::PropertyCode::UserProperty,
-                                        &field_proto_number,
-                                        &u32_val.to_string(),
-                                    )
-                                    .map_err(|e| {
-                                        UStatus::fail_with_code(
-                                            UCode::INTERNAL,
-                                            format!(
-                                                "Unable to create u32 mqtt property, err: {e:?}"
-                                            ),
-                                        )
-                                    })?;
-                            }
-                        }
-                        protobuf::reflect::RuntimeType::String => {
-                            if let Some(string_val) = field_val_wrapped.to_str() {
-                                properties
-                                    .push_string_pair(
-                                        mqtt::PropertyCode::UserProperty,
-                                        &field_proto_number,
-                                        string_val,
-                                    )
-                                    .map_err(|e| {
-                                        UStatus::fail_with_code(
-                                            UCode::INTERNAL,
-                                            format!(
-                                                "Unable to create string mqtt property, err: {e:?}"
-                                            ),
-                                        )
-                                    })?;
-                            }
-                        }
-                        protobuf::reflect::RuntimeType::Enum(_) => {
-                            if let Some(enum_number) = field_val_wrapped.to_enum_value() {
-                                properties
-                                    .push_string_pair(
-                                        mqtt::PropertyCode::UserProperty,
-                                        &field_proto_number,
-                                        &enum_number.to_string(),
-                                    )
-                                    .map_err(|e| {
-                                        UStatus::fail_with_code(
-                                            UCode::INTERNAL,
-                                            format!(
-                                                "Unable to create enum mqtt property, err: {e:?}"
-                                            ),
-                                        )
-                                    })?;
-                            }
-                        }
-                        protobuf::reflect::RuntimeType::Message(descriptor) => {
-                            // Get type name of message to use for downcasting.
-                            let message_type_name = descriptor.name().to_ascii_lowercase();
-
-                            // If field value can be unwrapped as a MessageRef, process the field value.
-                            // Currently only set up to process `UUID` and `UURI` types. Add more as needed.
-                            if let Some(field_val) = field_val_wrapped.to_message() {
-                                let val = field_val.deref();
-
-                                if message_type_name == "uuid" {
-                                    let uuid_downcast = val.downcast_ref::<UUID>();
-                                    if let Some(uuid) = uuid_downcast {
-                                        properties.push_string_pair(mqtt::PropertyCode::UserProperty, &field_proto_number, &uuid.to_hyphenated_string()).map_err(|e| {
-                                            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to create uuid mqtt property, err: {e:?}"))
-                                        })?;
-                                    }
-                                } else if message_type_name == "uuri" {
-                                    let uuri_downcast = val.downcast_ref::<UUri>();
-                                    if let Some(uuri) = uuri_downcast {
-                                        let uuri_string: String = uuri.into();
-                                        properties.push_string_pair(mqtt::PropertyCode::UserProperty, &field_proto_number, &uuri_string).map_err(|e| {
-                                            UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to create uuri mqtt property, err: {e:?}"))
-                                        })?;
-                                    }
-                                } else {
-                                    return Err(UStatus::fail_with_code(
-                                        UCode::INTERNAL,
-                                        format!("Unsupported message type: {}", message_type_name),
-                                    ));
-                                }
-                            } else {
-                                return Err(UStatus::fail_with_code(
-                                    UCode::INTERNAL,
-                                    format!(
-                                        "Unable to process field value from uAttributes: {}",
-                                        field.name()
-                                    ),
-                                ));
-                            }
-                        }
-                        _ => {
-                            return Err(UStatus::fail_with_code(
-                                UCode::INTERNAL,
-                                format!(
-                                    "Unsupported protobuf field type: {}",
-                                    field_val_wrapped.get_type()
-                                ),
-                            ));
-                        }
-                    }
-                }
-            } else {
+            // If field is not singular, log warning and skip field.
+            if !field.is_singular() {
                 warn!(
                     "Unable to process non-singular field type: {}",
                     field.name()
                 );
+                continue;
+            }
+
+            // log if field value is not present.
+            let Some(field_val_wrapped) = field.get_singular(attributes) else {
+                trace!("Field value not present for field: {}", field.name());
+                continue;
+            };
+
+            match field_val_wrapped.get_type() {
+                protobuf::reflect::RuntimeType::U32 => {
+                    if let Some(u32_val) = field_val_wrapped.to_u32() {
+                        properties
+                            .push_string_pair(
+                                mqtt::PropertyCode::UserProperty,
+                                &field_proto_number,
+                                &u32_val.to_string(),
+                            )
+                            .map_err(|e| {
+                                UStatus::fail_with_code(
+                                    UCode::INTERNAL,
+                                    format!("Unable to create u32 mqtt property, err: {e:?}"),
+                                )
+                            })?;
+                    }
+                }
+                protobuf::reflect::RuntimeType::String => {
+                    if let Some(string_val) = field_val_wrapped.to_str() {
+                        properties
+                            .push_string_pair(
+                                mqtt::PropertyCode::UserProperty,
+                                &field_proto_number,
+                                string_val,
+                            )
+                            .map_err(|e| {
+                                UStatus::fail_with_code(
+                                    UCode::INTERNAL,
+                                    format!("Unable to create string mqtt property, err: {e:?}"),
+                                )
+                            })?;
+                    }
+                }
+                protobuf::reflect::RuntimeType::Enum(_) => {
+                    if let Some(enum_number) = field_val_wrapped.to_enum_value() {
+                        properties
+                            .push_string_pair(
+                                mqtt::PropertyCode::UserProperty,
+                                &field_proto_number,
+                                &enum_number.to_string(),
+                            )
+                            .map_err(|e| {
+                                UStatus::fail_with_code(
+                                    UCode::INTERNAL,
+                                    format!("Unable to create enum mqtt property, err: {e:?}"),
+                                )
+                            })?;
+                    }
+                }
+                protobuf::reflect::RuntimeType::Message(descriptor) => {
+                    // Get type name of message to use for downcasting.
+                    let message_type_name: &str = &descriptor.name().to_ascii_lowercase();
+
+                    // If field value can be unwrapped as a MessageRef, process the field value.
+                    // Currently only set up to process `UUID` and `UURI` types. Add more as needed.
+                    let Some(field_val) = field_val_wrapped.to_message() else {
+                        return Err(UStatus::fail_with_code(
+                            UCode::INTERNAL,
+                            format!(
+                                "Unable to process field value from uAttributes: {}",
+                                field.name()
+                            ),
+                        ));
+                    };
+
+                    let val = field_val.deref();
+
+                    match message_type_name {
+                        UUID_NAME => {
+                            let Some(uuid) = val.downcast_ref::<UUID>() else {
+                                return Err(UStatus::fail_with_code(
+                                    UCode::INTERNAL,
+                                    format!(
+                                        "Unable to downcast field value to UUID: {}",
+                                        field.name()
+                                    ),
+                                ));
+                            };
+
+                            properties
+                                .push_string_pair(
+                                    mqtt::PropertyCode::UserProperty,
+                                    &field_proto_number,
+                                    &uuid.to_hyphenated_string(),
+                                )
+                                .map_err(|e| {
+                                    UStatus::fail_with_code(
+                                        UCode::INTERNAL,
+                                        format!("Unable to create uuid mqtt property, err: {e:?}"),
+                                    )
+                                })?;
+                        }
+                        UURI_NAME => {
+                            let Some(uuri) = val.downcast_ref::<UUri>() else {
+                                return Err(UStatus::fail_with_code(
+                                    UCode::INTERNAL,
+                                    format!(
+                                        "Unable to downcast field value to UUri: {}",
+                                        field.name()
+                                    ),
+                                ));
+                            };
+
+                            let uuri_string: String = uuri.into();
+                            properties
+                                .push_string_pair(
+                                    mqtt::PropertyCode::UserProperty,
+                                    &field_proto_number,
+                                    &uuri_string,
+                                )
+                                .map_err(|e| {
+                                    UStatus::fail_with_code(
+                                        UCode::INTERNAL,
+                                        format!("Unable to create uuri mqtt property, err: {e:?}"),
+                                    )
+                                })?;
+                        }
+                        _ => {
+                            return Err(UStatus::fail_with_code(
+                                UCode::INTERNAL,
+                                format!("Unsupported message type: {}", message_type_name),
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(UStatus::fail_with_code(
+                        UCode::INTERNAL,
+                        format!(
+                            "Unsupported protobuf field type: {}",
+                            field_val_wrapped.get_type()
+                        ),
+                    ));
+                }
             }
         }
 
@@ -704,75 +747,83 @@ impl UPClientMqtt {
                 )
             })?;
 
-            if let Some(field) = attributes
+            let Some(field) = attributes
                 .descriptor_dyn()
                 .field_by_number(protobuf_field_number)
-            {
-                // Need to get the reflect value to properly set the field.
-                let field_value = field.get_singular_field_or_default(&attributes);
-                let field_type = field_value.get_type();
-
-                let value_box = match field_type {
-                    protobuf::reflect::RuntimeType::U32 => {
-                        let u32_val = value.parse::<u32>().map_err(|e| {
-                            UStatus::fail_with_code(
-                                UCode::INTERNAL,
-                                format!("Unable to parse attribute field value, err: {e:?}"),
-                            )
-                        })?;
-                        Ok(protobuf::reflect::ReflectValueBox::U32(u32_val))
-                    }
-                    protobuf::reflect::RuntimeType::String => {
-                        Ok(protobuf::reflect::ReflectValueBox::String(value))
-                    }
-                    protobuf::reflect::RuntimeType::Enum(descriptor) => {
-                        let enum_val = value.parse::<i32>().map_err(|e| {
-                            UStatus::fail_with_code(
-                                UCode::INTERNAL,
-                                format!("Unable to parse attribute field to enum, err: {e:?}"),
-                            )
-                        })?;
-                        Ok(protobuf::reflect::ReflectValueBox::Enum(
-                            descriptor.clone(),
-                            enum_val,
-                        ))
-                    }
-                    protobuf::reflect::RuntimeType::Message(descriptor) => {
-                        // Get type name of message to use for downcasting.
-                        let message_type_name = descriptor.name().to_ascii_lowercase();
-
-                        // If field value can be unwrapped as a MessageRef, process the field value.
-                        // Currently only set up to process `UUID` and `UURI` types. Add more as needed.
-                        if message_type_name == "uuid" {
-                            let uuid = UUID::from_str(&value).map_err(|e| {
-                                UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to parse attribute field to uuid message, err: {e:?}"))
-                            })?;
-                            Ok(protobuf::reflect::ReflectValueBox::Message(Box::new(uuid)))
-                        } else if message_type_name == "uuri" {
-                            let uuri = UUri::from_str(&value).map_err(|e| {
-                                UStatus::fail_with_code(UCode::INTERNAL, format!("Unable to parse attribute field to uuri message, err: {e:?}"))
-                            })?;
-                            Ok(protobuf::reflect::ReflectValueBox::Message(Box::new(uuri)))
-                        } else {
-                            Err(UStatus::fail_with_code(
-                                UCode::INTERNAL,
-                                format!("Unsupported message type: {}", message_type_name),
-                            ))
-                        }
-                    }
-                    _ => Err(UStatus::fail_with_code(
-                        UCode::INTERNAL,
-                        format!("Unsupported protobuf field type: {}", field_type),
-                    )),
-                }?;
-
-                field.set_singular_field(&mut attributes, value_box)
-            } else {
+            else {
                 return Err(UStatus::fail_with_code(
                     UCode::INTERNAL,
                     format!("Unable to map user property to uAttributes: {key:?} - {value:?}"),
-                ))?;
-            }
+                ));
+            };
+
+            // Need to get the reflect value to properly set the field.
+            let field_value = field.get_singular_field_or_default(&attributes);
+            let field_type = field_value.get_type();
+
+            let value_box = match field_type {
+                protobuf::reflect::RuntimeType::U32 => {
+                    let u32_val = value.parse::<u32>().map_err(|e| {
+                        UStatus::fail_with_code(
+                            UCode::INTERNAL,
+                            format!("Unable to parse attribute field value, err: {e:?}"),
+                        )
+                    })?;
+                    Ok(protobuf::reflect::ReflectValueBox::U32(u32_val))
+                }
+                protobuf::reflect::RuntimeType::String => {
+                    Ok(protobuf::reflect::ReflectValueBox::String(value))
+                }
+                protobuf::reflect::RuntimeType::Enum(descriptor) => {
+                    let enum_val = value.parse::<i32>().map_err(|e| {
+                        UStatus::fail_with_code(
+                            UCode::INTERNAL,
+                            format!("Unable to parse attribute field to enum, err: {e:?}"),
+                        )
+                    })?;
+                    Ok(protobuf::reflect::ReflectValueBox::Enum(
+                        descriptor.clone(),
+                        enum_val,
+                    ))
+                }
+                protobuf::reflect::RuntimeType::Message(descriptor) => {
+                    // Get type name of message to use for downcasting.
+                    let message_type_name: &str = &descriptor.name().to_ascii_lowercase();
+
+                    // If field value can be unwrapped as a MessageRef, process the field value.
+                    // Currently only set up to process `UUID` and `UURI` types. Add more as needed.
+                    match message_type_name {
+                        UUID_NAME => {
+                            let uuid = UUID::from_str(&value).map_err(|e| {
+                                UStatus::fail_with_code(
+                                    UCode::INTERNAL,
+                                    format!("Unable to parse attribute field to uuid message, err: {e:?}"),
+                                )
+                            })?;
+                            Ok(protobuf::reflect::ReflectValueBox::Message(Box::new(uuid)))
+                        }
+                        UURI_NAME => {
+                            let uuri = UUri::from_str(&value).map_err(|e| {
+                                UStatus::fail_with_code(
+                                    UCode::INTERNAL,
+                                    format!("Unable to parse attribute field to uuri message, err: {e:?}"),
+                                )
+                            })?;
+                            Ok(protobuf::reflect::ReflectValueBox::Message(Box::new(uuri)))
+                        }
+                        _ => Err(UStatus::fail_with_code(
+                            UCode::INTERNAL,
+                            format!("Unsupported message type: {}", message_type_name),
+                        )),
+                    }
+                }
+                _ => Err(UStatus::fail_with_code(
+                    UCode::INTERNAL,
+                    format!("Unsupported protobuf field type: {}", field_type),
+                )),
+            }?;
+
+            field.set_singular_field(&mut attributes, value_box)
         }
 
         // Validate the reconstructed attributes
