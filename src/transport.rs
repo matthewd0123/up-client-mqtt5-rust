@@ -242,6 +242,7 @@ mod tests {
             assert_eq!(result.err().unwrap(), expected_error.unwrap());
         } else {
             assert!(result.is_ok());
+            assert!(expected_error.is_none());
         }
     }
 
@@ -292,6 +293,7 @@ mod tests {
             assert_eq!(result.err().unwrap(), expected_error.unwrap());
         } else {
             assert!(result.is_ok());
+            assert!(expected_error.is_none());
         }
 
         let topic_map = client.topic_listener_map.read().await;
@@ -356,6 +358,7 @@ mod tests {
             assert_eq!(result.err().unwrap(), expected_error.unwrap());
         } else {
             assert!(result.is_ok());
+            assert!(expected_error.is_none());
         }
 
         {
