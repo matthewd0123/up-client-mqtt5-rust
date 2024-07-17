@@ -572,11 +572,7 @@ impl UPClientMqtt {
 
         // Add uAttributes version number to properties.
         properties
-            .push_string_pair(
-                mqtt::PropertyCode::UserProperty,
-                "0",
-                "1",
-            )
+            .push_string_pair(mqtt::PropertyCode::UserProperty, "0", "1")
             .map_err(|e| {
                 UStatus::fail_with_code(
                     UCode::INTERNAL,
@@ -1118,11 +1114,7 @@ mod tests {
 
         // Add uAttributes version number.
         properties
-            .push_string_pair(
-                mqtt::PropertyCode::UserProperty,
-                "0",
-                "1",
-            )
+            .push_string_pair(mqtt::PropertyCode::UserProperty, "0", "1")
             .unwrap();
 
         if let Some(id_val) = id {
