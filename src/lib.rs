@@ -570,6 +570,20 @@ impl UPClientMqtt {
                 UStatus::fail_with_code(UCode::INTERNAL, format!("Invalid uAttributes, err: {e:?}"))
             })?;
 
+        // Add uAttributes version number to properties.
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                "0",
+                "1",
+            )
+            .map_err(|e| {
+                UStatus::fail_with_code(
+                    UCode::INTERNAL,
+                    format!("Unable to create version mqtt property, err: {e:?}"),
+                )
+            })?;
+
         // Iterate over all fields in UAttributes and extract protobuf field numbers and values.
         for field in attributes.descriptor_dyn().fields() {
             // Get protobuf field number as string.
@@ -747,6 +761,18 @@ impl UPClientMqtt {
                 )
             })?;
 
+            if protobuf_field_number == 0 {
+                let _attributes_version: u32 = value.parse().map_err(|e| {
+                    UStatus::fail_with_code(
+                        UCode::INTERNAL,
+                        format!("Unable to parse uAttribute version number, err: {e:?}"),
+                    )
+                })?;
+
+                //TODO: Add version check here if needed.
+                continue;
+            }
+
             let Some(field) = attributes
                 .descriptor_dyn()
                 .field_by_number(protobuf_field_number)
@@ -918,10 +944,6 @@ mod tests {
 
     #[async_trait]
     impl UListener for SimpleListener {
-        async fn on_error(&self, status: UStatus) {
-            println!("Error: {:?}", status);
-        }
-
         async fn on_receive(&self, message: UMessage) {
             println!("Received message: {:?}", message);
         }
@@ -1093,6 +1115,15 @@ mod tests {
         payload_format: Option<UPayloadFormat>,
     ) -> mqtt::Properties {
         let mut properties = mqtt::Properties::new();
+
+        // Add uAttributes version number.
+        properties
+            .push_string_pair(
+                mqtt::PropertyCode::UserProperty,
+                "0",
+                "1",
+            )
+            .unwrap();
 
         if let Some(id_val) = id {
             properties
@@ -1353,7 +1384,7 @@ mod tests {
             Some("//VIN.vehicles/A8000/2/8A50"),
             None, None, None, None, None, None, None, None, None
         ),
-        3,
+        4,
         None;
         "Publish success"
     )]
@@ -1365,7 +1396,7 @@ mod tests {
             Some("//VIN.vehicles/B8000/3/0"),
             None, None, None, None, None, None, None, None
         ),
-        4,
+        5,
         None;
         "Notification success"
     )]
@@ -1379,7 +1410,7 @@ mod tests {
             Some(3600),
             None, None, None, None, None, None
         ),
-        6,
+        7,
         None;
         "Request success"
     )]
@@ -1394,7 +1425,7 @@ mod tests {
             Some(UUID::build()),
             None, None, None
         ),
-        6,
+        7,
         None;
         "Response success"
     )]
@@ -1405,7 +1436,7 @@ mod tests {
             Some("//VIN.vehicles/A8000/2/1A50"),
             None, None, None, None, None, None, None, None, None
         ),
-        3,
+        4,
         Some(UStatus::fail_with_code(UCode::INTERNAL, "Invalid uAttributes, err: ValidationError(\"Validation failure: Invalid source URI: Validation error: Resource ID must be >= 0x8000\")".to_string()));
         "Publish failure with validation error"
     )]
