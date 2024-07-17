@@ -788,7 +788,7 @@ impl UPClientMqtt {
                     let u32_val = value.parse::<u32>().map_err(|e| {
                         UStatus::fail_with_code(
                             UCode::INTERNAL,
-                            format!("Unable to parse attribute field value, err: {e:?}"),
+                            format!("Unable to parse attribute field {protobuf_field_number} to value, err: {e:?}"),
                         )
                     })?;
                     Ok(protobuf::reflect::ReflectValueBox::U32(u32_val))
@@ -800,7 +800,7 @@ impl UPClientMqtt {
                     let enum_val = value.parse::<i32>().map_err(|e| {
                         UStatus::fail_with_code(
                             UCode::INTERNAL,
-                            format!("Unable to parse attribute field to enum, err: {e:?}"),
+                            format!("Unable to parse attribute field {protobuf_field_number} to enum, err: {e:?}"),
                         )
                     })?;
                     Ok(protobuf::reflect::ReflectValueBox::Enum(
@@ -819,7 +819,7 @@ impl UPClientMqtt {
                             let uuid = UUID::from_str(&value).map_err(|e| {
                                 UStatus::fail_with_code(
                                     UCode::INTERNAL,
-                                    format!("Unable to parse attribute field to uuid message, err: {e:?}"),
+                                    format!("Unable to parse attribute field {protobuf_field_number} to uuid message, err: {e:?}"),
                                 )
                             })?;
                             Ok(protobuf::reflect::ReflectValueBox::Message(Box::new(uuid)))
@@ -828,20 +828,26 @@ impl UPClientMqtt {
                             let uuri = UUri::from_str(&value).map_err(|e| {
                                 UStatus::fail_with_code(
                                     UCode::INTERNAL,
-                                    format!("Unable to parse attribute field to uuri message, err: {e:?}"),
+                                    format!("Unable to parse attribute field {protobuf_field_number} to uuri message, err: {e:?}"),
                                 )
                             })?;
                             Ok(protobuf::reflect::ReflectValueBox::Message(Box::new(uuri)))
                         }
                         _ => Err(UStatus::fail_with_code(
                             UCode::INTERNAL,
-                            format!("Unsupported message type: {}", message_type_name),
+                            format!(
+                                "Unsupported message type for field {protobuf_field_number}: {}",
+                                message_type_name
+                            ),
                         )),
                     }
                 }
                 _ => Err(UStatus::fail_with_code(
                     UCode::INTERNAL,
-                    format!("Unsupported protobuf field type: {}", field_type),
+                    format!(
+                        "Unsupported protobuf field type for field {protobuf_field_number}: {}",
+                        field_type
+                    ),
                 )),
             }?;
 
