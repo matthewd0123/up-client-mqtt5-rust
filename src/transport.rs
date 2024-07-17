@@ -97,10 +97,6 @@ mod tests {
 
     #[async_trait]
     impl UListener for SimpleListener {
-        async fn on_error(&self, status: UStatus) {
-            println!("Error: {:?}", status);
-        }
-
         async fn on_receive(&self, message: UMessage) {
             println!("Received message: {:?}", message);
         }

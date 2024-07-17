@@ -28,10 +28,6 @@ struct PrintlnListener {}
 
 #[async_trait]
 impl UListener for PrintlnListener {
-    async fn on_error(&self, status: UStatus) {
-        println!("Error: {:?}", status);
-    }
-
     async fn on_receive(&self, message: UMessage) {
         let msg_payload = message.payload.unwrap();
         let msg_str: &str = str::from_utf8(&msg_payload).unwrap();
