@@ -1,0 +1,9 @@
+{
+    "authority_name": "Vehicle_B",
+    "send_topics": [
+
+    ],
+    "recv_topics": [
+        ["//Vehicle_A/FFFF/FF/FFFF", "//Vehicle_B/FFFF/FF/FFFF"]
+    ]
+}
