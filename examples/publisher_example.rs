@@ -20,7 +20,7 @@ use up_rust::{UMessageBuilder, UPayloadFormat, UStatus, UTransport, UUri, UUID};
 async fn main() -> Result<(), UStatus> {
     let config = MqttConfig {
         mqtt_hostname: "localhost".to_string(),
-        mqtt_port: "1883".to_string(),
+        mqtt_port: "8883".to_string(),
         max_buffered_messages: 100,
         max_subscriptions: 100,
         session_expiry_interval: 3600,
