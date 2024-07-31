@@ -59,11 +59,15 @@ async fn main() -> Result<(), UStatus> {
         "//Vehicle_B/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"
     ))
     .expect("Failed to create source filter");
+    let sink_filter = UUri::from_str(&format!(
+        "//Vehicle_A/{WILDCARD_ENTITY_ID:X}/{WILDCARD_ENTITY_VERSION:X}/{WILDCARD_RESOURCE_ID:X}"
+    ))
+    .expect("Failed to create sink filter");
 
-    println!("Subscribing to: {}", source_filter.to_uri(false));
+    println!("Subscribing to source: {}, sink: {}", source_filter.to_uri(false), sink_filter.to_uri(false));
 
     client
-        .register_listener(&source_filter, None, listener.clone())
+        .register_listener(&source_filter, Some(&sink_filter), listener.clone())
         .await?;
 
     loop {
