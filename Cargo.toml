@@ -46,7 +46,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
 tokio = { version = "1.38", features = ["full"] }
 tokio-macros = { version = "2.3" }
-up-rust = { git = "https://github.com/eclipse-uprotocol/up-rust", rev = "da722852004f657fa8d0282369fcfccb0ccda112" }
+up-rust = { default-features = false, git = "https://github.com/eclipse-uprotocol/up-rust", rev = "3a50104421a801d52e1d9c68979db54c013ce43d" }
 url = { version = "2.5" }
 uuid = { version = "1.7", features = ["v8"] }
 

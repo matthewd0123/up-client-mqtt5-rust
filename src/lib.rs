@@ -921,7 +921,7 @@ impl UPClientMqtt {
 #[cfg(test)]
 mod tests {
     use protobuf::Enum;
-    use up_rust::{UListener, UMessageType, UPayloadFormat, UPriority, UUID};
+    use up_rust::{UListener, UMessageType, UPayloadFormat, UPriority, UUIDBuilder, UUID};
 
     use test_case::test_case;
 
@@ -948,6 +948,10 @@ mod tests {
     impl UListener for SimpleListener {
         async fn on_receive(&self, message: UMessage) {
             println!("Received message: {:?}", message);
+        }
+
+        async fn on_error(&self, err: UStatus) {
+            println!("SimpleListener: Encountered an error: {err:?}");
         }
     }
 
@@ -1377,7 +1381,7 @@ mod tests {
 
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_PUBLISH),
             Some("//VIN.vehicles/A8000/2/8A50"),
             None, None, None, None, None, None, None, None, None
@@ -1388,7 +1392,7 @@ mod tests {
     )]
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION),
             Some("//VIN.vehicles/A8000/2/1A50"),
             Some("//VIN.vehicles/B8000/3/0"),
@@ -1400,7 +1404,7 @@ mod tests {
     )]
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_REQUEST),
             Some("//VIN.vehicles/A8000/2/0"),
             Some("//VIN.vehicles/B8000/3/1B50"),
@@ -1414,13 +1418,13 @@ mod tests {
     )]
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_RESPONSE),
             Some("//VIN.vehicles/B8000/3/1B50"),
             Some("//VIN.vehicles/A8000/2/0"),
             Some(UPriority::UPRIORITY_CS4),
             None, None, None,
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             None, None, None
         ),
         7,
@@ -1429,7 +1433,7 @@ mod tests {
     )]
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_PUBLISH),
             Some("//VIN.vehicles/A8000/2/1A50"),
             None, None, None, None, None, None, None, None, None
@@ -1459,7 +1463,7 @@ mod tests {
 
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_PUBLISH),
             Some("//VIN.vehicles/A8000/2/8A50"),
             None, None, None, None, None, None, None, None, None
@@ -1469,7 +1473,7 @@ mod tests {
     )]
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_NOTIFICATION),
             Some("//VIN.vehicles/A8000/2/1A50"),
             Some("//VIN.vehicles/B8000/3/0"),
@@ -1480,7 +1484,7 @@ mod tests {
     )]
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_REQUEST),
             Some("//VIN.vehicles/A8000/2/0"),
             Some("//VIN.vehicles/B8000/3/1B50"),
@@ -1493,13 +1497,13 @@ mod tests {
     )]
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_RESPONSE),
             Some("//VIN.vehicles/B8000/3/1B50"),
             Some("//VIN.vehicles/A8000/2/0"),
             Some(UPriority::UPRIORITY_CS4),
             None, None, None,
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             None, None, None
         ),
         None;
@@ -1507,7 +1511,7 @@ mod tests {
     )]
     #[test_case(
         create_test_uattributes_and_properties(
-            Some(UUID::build()),
+            Some(UUIDBuilder::build()),
             Some(UMessageType::UMESSAGE_TYPE_PUBLISH),
             Some("//VIN.vehicles/A8000/2/1A50"),
             None, None, None, None, None, None, None, None, None

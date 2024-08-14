@@ -18,7 +18,7 @@ use std::{
 
 use async_trait::async_trait;
 use up_client_mqtt5_rust::{MqttConfig, UPClientMqtt, UPClientMqttType};
-use up_rust::{UListener, UMessage, UStatus, UTransport, UUri, UUID};
+use up_rust::{UListener, UMessage, UStatus, UTransport, UUIDBuilder, UUri, UUID};
 
 const WILDCARD_ENTITY_ID: u32 = 0x0000_FFFF;
 const WILDCARD_ENTITY_VERSION: u32 = 0x0000_00FF;
@@ -32,6 +32,10 @@ impl UListener for PrintlnListener {
         let msg_payload = message.payload.unwrap();
         let msg_str: &str = str::from_utf8(&msg_payload).unwrap();
         println!("Received message: {msg_str}");
+    }
+
+    async fn on_error(&self, err: UStatus) {
+        println!("SimpleListener: Encountered an error: {err:?}");
     }
 }
 
@@ -48,7 +52,7 @@ async fn main() -> Result<(), UStatus> {
 
     let client = UPClientMqtt::new(
         config,
-        UUID::build(),
+        UUIDBuilder::build(),
         "Vehicle_A".to_string(),
         UPClientMqttType::Device,
     )

@@ -14,7 +14,7 @@
 use std::{str::FromStr, time::SystemTime};
 
 use up_client_mqtt5_rust::{MqttConfig, UPClientMqtt, UPClientMqttType};
-use up_rust::{UMessageBuilder, UPayloadFormat, UStatus, UTransport, UUri, UUID};
+use up_rust::{UMessageBuilder, UPayloadFormat, UStatus, UTransport, UUIDBuilder, UUri, UUID};
 
 #[tokio::main]
 async fn main() -> Result<(), UStatus> {
@@ -29,7 +29,7 @@ async fn main() -> Result<(), UStatus> {
 
     let client = UPClientMqtt::new(
         config,
-        UUID::build(),
+        UUIDBuilder::build(),
         "Vehicle_B".to_string(),
         UPClientMqttType::Device,
     )

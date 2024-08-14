@@ -82,7 +82,7 @@ mod tests {
 
     use paho_mqtt::{self as mqtt, AsyncReceiver, Message};
     use up_rust::{
-        ComparableListener, UListener, UMessageBuilder, UMessageType, UPayloadFormat, UUID,
+        ComparableListener, UListener, UMessageBuilder, UMessageType, UPayloadFormat, UUIDBuilder, UUID
     };
 
     use test_case::test_case;
@@ -99,6 +99,10 @@ mod tests {
     impl UListener for SimpleListener {
         async fn on_receive(&self, message: UMessage) {
             println!("Received message: {:?}", message);
+        }
+
+        async fn on_error(&self, err: UStatus) {
+            println!("SimpleListener: Encountered an error: {err:?}");
         }
     }
 
@@ -159,7 +163,7 @@ mod tests {
                         .expect("Exoected a valid sink value");
 
                 Ok(
-                    UMessageBuilder::response(source_uri, UUID::build(), sink_uri)
+                    UMessageBuilder::response(source_uri, UUIDBuilder::build(), sink_uri)
                         .build_with_payload(payload.clone(), UPayloadFormat::UPAYLOAD_FORMAT_TEXT)
                         .unwrap(),
                 )
